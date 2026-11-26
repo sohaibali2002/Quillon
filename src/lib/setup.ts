@@ -1,0 +1,47 @@
+// Setup: one endpoint that answers "what is configured, what is missing".
+// The onboarding panel and the landing page both read it; every check is a
+// plain presence probe so nothing sensitive is ever echoed back.
+
+import { listKits, listTemplates } from "@/lib/brand";
+import { listJobs } from "@/lib/jobs";
+import { listComputers } from "@/lib/cloud-computers";
+
+export type SetupCheck = {
+  key: string;
+  label: string;
+  done: boolean;
+  how: string;
+};
+
+export function setupStatus(): {
+  checks: SetupCheck[];
+  steps: { title: string; body: string; href: string; done: boolean }[];
+  quickstart: { ollama: string; env: string; docker: string };
+} {
+  const has = (...names: string[]) => names.some((n) => Boolean(process.env[n]));
+  const localLlm = has("OLLAMA_BASE_URL") || has("LOCAL_LLM_BASE_URL");
+  const checks: SetupCheck[] = [
+    { key: "model", label: "A model is configured", done: true, how: "Works in mock mode out of the box; add any provider key for live models." },
+    { key: "live-model", label: "A live model key is set (or a local LLM is running)", done: has("AI_GATEWAY_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY") || localLlm, how: "Set AI_GATEWAY_API_KEY or OPENAI_API_KEY, or point OLLAMA_BASE_URL at your local Ollama." },
+    { key: "brand", label: "A brand kit exists", done: listKits().length > 0, how: "Create a kit in the Brand hub — colors, fonts, guidelines and assets." },
+    { key: "templates", label: "A template was cloned or generated", done: listTemplates().length > 0, how: "Upload a .pptx/.docx in the Studio to clone its exact theme, or use a standard template." },
+    { key: "jobs", label: "An unattended job is scheduled", done: listJobs().some((j) => j.enabled && j.schedule !== "manual"), how: "Pick an industry package and enable one of its seeded jobs." },
+    { key: "cloud", label: "A cloud computer is registered", done: listComputers().length > 0, how: "Add an SSH host (Vast, RunPod, Lambda, your own box) under Computers." },
+    { key: "sso", label: "SSO is enabled (optional)", done: has("AUTH_ISSUER", "AUTH_CLIENT_ID"), how: "Set AUTH_ISSUER, AUTH_CLIENT_ID and AUTH_CLIENT_SECRET for Entra ID / any OIDC." },
+  ];
+  const steps = [
+    { title: "1. Set one model key", body: "AI_GATEWAY_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY — or run Ollama locally with zero keys.", href: "/workspace", done: checks[1].done },
+    { title: "2. Create your brand kit", body: "Colors, fonts, guidelines, voice and logos become the source of truth for every document.", href: "/workspace?panel=brand", done: checks[2].done },
+    { title: "3. Clone a template", body: "Upload an existing .pptx or .docx and Quillon reads its exact theme for reuse.", href: "/workspace?panel=studio", done: checks[3].done },
+    { title: "4. Turn on unattended work", body: "Enable a seeded job from an industry package and it runs on schedule, no one watching.", href: "/workspace?panel=jobs", done: checks[4].done },
+  ];
+  return {
+    checks,
+    steps,
+    quickstart: {
+      ollama: "ollama serve && ollama pull llama3.1   # then set OLLAMA_BASE_URL=http://127.0.0.1:11434",
+      env: "AI_GATEWAY_API_KEY=...  # or OPENAI_API_KEY / ANTHROPIC_API_KEY / OPENROUTER_API_KEY",
+      docker: "docker compose up   # app + postgres + redis, then open http://localhost:3000",
+    },
+  };
+}

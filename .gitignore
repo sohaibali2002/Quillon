@@ -1,0 +1,9 @@
+node_modules/
+.data/
+.mlai/
+tests/smoke-results.json
+.next/
+.env
+.env*.local
+*.tsbuildinfo
+next-env.d.ts

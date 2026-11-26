@@ -1,0 +1,23 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_PATH=/data/quillon.db
+      # Model: set one of these, or run with none for mock mode.
+      - AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      # Local LLM: point at a host-running Ollama.
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+    volumes:
+      - app-data:/data
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  app-data:

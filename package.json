@@ -1,0 +1,40 @@
+{
+  "name": "ai-platform",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "smoke": "node tests/smoke.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/amazon-bedrock": "^5.0.149",
+    "@ai-sdk/anthropic": "^4.0.110",
+    "@ai-sdk/azure": "^4.0.133",
+    "@ai-sdk/deepseek": "^3.0.91",
+    "@ai-sdk/google": "^4.0.128",
+    "@ai-sdk/groq": "^4.0.88",
+    "@ai-sdk/mistral": "^4.0.91",
+    "@ai-sdk/openai": "^4.0.125",
+    "@ai-sdk/openai-compatible": "^3.0.96",
+    "@ai-sdk/perplexity": "^5.0.39",
+    "@ai-sdk/react": "^4.0.188",
+    "@ai-sdk/xai": "^5.0.52",
+    "ai": "^7.0.183",
+    "docx": "^9.16.1",
+    "exceljs": "^4.4.0",
+    "jszip": "^3.10.2",
+    "next": "^15.5.0",
+    "pptxgenjs": "^4.0.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.6.0"
+  }
+}
