@@ -1,3 +1,9 @@
+async function secure(req: Request) {
+  const gate = await guard(req);
+  if (gate instanceof Response) return gate;
+  return gate;
+}
+
 // Core text + tool-calling: non-streaming and streaming.
 import {
   convertToModelMessages,
@@ -9,12 +15,16 @@ import {
 import { resolveModelAny as resolveModel } from "@/lib/models";
 import { platformTools } from "@/lib/tools";
 
+import { guard } from "@/lib/guard";
 export const maxDuration = 30;
 
 // POST /api/generate
 //   { prompt, model? }                  -> { text, usage, finishReason, steps }
 //   { messages: UIMessage[], model? }   -> same
 export async function POST(req: Request) {
+  const denied = await secure(req);
+  if (denied instanceof Response) return denied;
+
   const body = await req.json();
   const model = await resolveModel(body.model);
 

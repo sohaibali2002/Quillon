@@ -3,6 +3,7 @@
 // Tokens are stored encrypted at rest (AES-256-GCM) keyed by CONNECTORS_SECRET.
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { getDb } from "./db";
+import { requireSecret } from "./guard";
 
 export type ConnectorCategory = "files" | "tickets" | "chat" | "crm" | "knowledge" | "custom";
 
@@ -154,7 +155,11 @@ export function decryptToken(secret: string, stored: string): string {
 }
 
 export function connectorsSecret(): string {
-  return process.env.CONNECTORS_SECRET?.trim() || process.env.AUTH_SECRET?.trim() || "quillon-dev-key";
+  // Fail closed in production; AUTH_SECRET_PREVIOUS keeps rotated-key tokens readable.
+  return requireSecret("CONNECTORS_SECRET", [
+    process.env.CONNECTORS_SECRET,
+    process.env.AUTH_SECRET,
+  ]);
 }
 
 export function ensureConnectorTables() {

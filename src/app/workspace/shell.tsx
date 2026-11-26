@@ -18,6 +18,7 @@ import AccountPanel from "@/app/components/account-panel";
 import BrandPanel from "@/app/components/brand-panel";
 import StudioPanel from "@/app/components/studio-panel";
 import JobsPanel from "@/app/components/jobs-panel";
+import GovernPanel from "@/app/components/govern-panel";
 import SetupPanel from "@/app/components/setup-panel";
 
 const icon = (d: string) => (
@@ -39,6 +40,7 @@ const panels = [
   { id: "brand", label: "Brand", hint: "Kits, guidelines, template cloning", key: "q", icon: icon("M12 3l2.4 4.9 5.4.8-3.9 3.8.9 5.4-4.8-2.5-4.8 2.5.9-5.4L4.2 8.7l5.4-.8z"), render: () => <BrandPanel /> },
   { id: "studio", label: "Studio", hint: "Branded decks and documents", key: "w", icon: icon("M4 5h16v11H4zM9 20h6M12 16v4M8 9h8M8 12h5"), render: () => <StudioPanel /> },
   { id: "jobs", label: "Unattended", hint: "Scheduled and industry packages", key: "e", icon: icon("M12 8v4l3 3M12 3a9 9 0 1 0 9 9"), render: () => <JobsPanel /> },
+  { id: "govern", label: "Govern", hint: "Audit, capabilities, recovery", key: "t", icon: icon("M12 3l7 3v5c0 5-3.5 8-7 10-3.5-2-7-5-7-10V6z"), render: () => <GovernPanel /> },
   { id: "setup", label: "Setup", hint: "Quick setup and cloud computers", key: "r", icon: icon("M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19 12a7 7 0 0 0-.2-1.6l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2.7-1.6L13.5 2h-3l-.4 2.9a7 7 0 0 0-2.7 1.6l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .5.1 1.1.2 1.6l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2.7 1.6l.4 2.9h3l.4-2.9a7 7 0 0 0 2.7-1.6l2.3 1 2-3.4-2-1.5c.1-.5.2-1.1.2-1.6z"), render: () => <SetupPanel /> },
   { id: "account", label: "Account", hint: "Sign-in and session", key: "0", icon: icon("M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0"), render: () => <AccountPanel /> },
 ] as const;

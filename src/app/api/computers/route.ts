@@ -1,6 +1,13 @@
+async function secure(req: Request) {
+  const gate = await guard(req);
+  if (gate instanceof Response) return gate;
+  return gate;
+}
+
 import { NextResponse } from "next/server";
 import { addComputer, checkComputer, deleteComputer, listComputers } from "@/lib/cloud-computers";
 
+import { guard } from "@/lib/guard";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
@@ -9,6 +16,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const denied = await secure(request);
+  if (denied instanceof Response) return denied;
+
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body) return NextResponse.json({ error: "invalid body" }, { status: 400 });
   if (typeof body.checkId === "string") {
@@ -29,6 +39,9 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const denied = await secure(request);
+  if (denied instanceof Response) return denied;
+
   const id = new URL(request.url).searchParams.get("computerId");
   if (!id) return NextResponse.json({ error: "computerId is required" }, { status: 400 });
   return NextResponse.json({ ok: deleteComputer(id) });

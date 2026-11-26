@@ -1,0 +1,336 @@
+openapi: 3.1.0
+info:
+  title: Quillon API
+  version: 1.0.0
+  description: >
+    Enterprise AI platform API. All sensitive routes require a session cookie
+    (Quillon-Session) when auth is enforced (SSO configured or
+    QUILLON_REQUIRE_AUTH=1). Mutating requests must send a matching Origin
+    header. Errors use { error: { message, ... } }.
+servers:
+  - url: /
+tags:
+  - name: governance
+  - name: transactions
+  - name: graph
+  - name: verify
+  - name: worker
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: quillon_session
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message: { type: string }
+      required: [error]
+    Capability:
+      type: object
+      properties:
+        id: { type: string }
+        subject: { type: string }
+        connector: { type: string }
+        action: { type: string }
+        resource: { type: [string, "null"] }
+        scope: { type: string }
+        expires_at: { type: string, format: date-time }
+        used_count: { type: integer }
+        max_uses: { type: [integer, "null"] }
+    Transaction:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        intent: { type: string }
+        status:
+          type: string
+          enum: [planned, simulated, awaiting_approval, executing, verifying, done, failed, compensated, rejected]
+        actions:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              seq: { type: integer }
+              kind: { type: string }
+              target: { type: string }
+              payload: { type: object }
+              status: { type: string, enum: [pending, executed, failed, compensated, skipped] }
+security:
+  - sessionCookie: []
+paths:
+  /api/governance:
+    get:
+      tags: [governance]
+      summary: Audit trail, capabilities, durable runs, verification reports, recovery sweep
+      responses:
+        "200":
+          description: Governance snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  audit: { type: array, items: { type: object } }
+                  capabilities: { type: array, items: { $ref: "#/components/schemas/Capability" } }
+                  runs: { type: array, items: { type: object } }
+                  verifications: { type: array, items: { type: object } }
+                  recovery: { type: object }
+                  admin: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [governance]
+      summary: Grant/revoke capability, replay run, purge expired (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [op, subject, connector, action]
+                  properties:
+                    op: { type: string, enum: [grant] }
+                    subject: { type: string }
+                    connector: { type: string }
+                    action: { type: string }
+                    resource: { type: [string, "null"] }
+                    ttlSeconds: { type: integer, minimum: 10, maximum: 86400 }
+                    maxUses: { type: [integer, "null"] }
+                - type: object
+                  required: [op, id]
+                  properties:
+                    op: { type: string, enum: [revoke, replay] }
+                    id: { type: string }
+                - type: object
+                  required: [op]
+                  properties:
+                    op: { type: string, enum: [purge] }
+      responses:
+        "200": { description: Operation result }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not admin }
+  /api/transactions:
+    get:
+      tags: [transactions]
+      summary: List transactions, or one with its replay (id query)
+      parameters:
+        - in: query
+          name: id
+          schema: { type: string }
+      responses:
+        "200": { description: Transactions or single transaction + replay }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/BadRequest" }
+    post:
+      tags: [transactions]
+      summary: Lifecycle ops — plan (auto-simulates), simulate, approve, execute, compensate, replay
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [op, title, intent, actions]
+                  properties:
+                    op: { type: string, enum: [plan] }
+                    title: { type: string, maxLength: 200 }
+                    intent: { type: string, maxLength: 2000 }
+                    actions:
+                      type: array
+                      minItems: 1
+                      maxItems: 50
+                      items:
+                        type: object
+                        required: [kind, target]
+                        properties:
+                          kind: { type: string }
+                          target: { type: string }
+                          payload: { type: object }
+                          expected: { type: string }
+                - type: object
+                  required: [op, id]
+                  properties:
+                    op: { type: string, enum: [simulate, execute, compensate, replay] }
+                    id: { type: string }
+                - type: object
+                  required: [op, id, approved]
+                  properties:
+                    op: { type: string, enum: [approve] }
+                    id: { type: string }
+                    approved: { type: boolean }
+      responses:
+        "200": { description: Resulting transaction or replay }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { description: Invalid state transition }
+  /api/graph:
+    get:
+      tags: [graph]
+      summary: Stats, or search + multi-hop expansion (q), or one entity (id)
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: id
+          schema: { type: string }
+        - in: query
+          name: type
+          schema: { type: string }
+      responses:
+        "200": { description: Stats, expansion or entity }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [graph]
+      summary: Upsert entity or link two entities with provenance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [op, type, name]
+                  properties:
+                    op: { type: string, enum: [upsert] }
+                    type: { type: string }
+                    name: { type: string }
+                    attrs: { type: object }
+                    confidence: { type: number }
+                - type: object
+                  required: [op, sourceId, relation, targetId, sourceSystem]
+                  properties:
+                    op: { type: string, enum: [link] }
+                    sourceId: { type: string }
+                    relation: { type: string }
+                    targetId: { type: string }
+                    sourceSystem: { type: string }
+                    sourceRef: { type: [string, "null"] }
+      responses:
+        "200": { description: Entity or edge }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: Both entities must exist }
+  /api/verify:
+    get:
+      tags: [verify]
+      summary: List verification reports
+      responses:
+        "200":
+          description: Reports
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reports:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        targetKind: { type: string, enum: [xlsx, pptx, docx] }
+                        targetName: { type: string }
+                        verdict: { type: string, enum: [pass, warn, fail] }
+                        checks: { type: array, items: { type: object } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [verify]
+      summary: Verify a spreadsheet, deck or document summary; returns a pass/warn/fail report
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [target, name, sheets]
+                  properties:
+                    target: { type: string, enum: [xlsx] }
+                    name: { type: string }
+                    sheets:
+                      type: array
+                      items:
+                        type: object
+                        required: [name, formulas, literals]
+                        properties:
+                          name: { type: string }
+                          formulas: { type: array, items: { type: string } }
+                          literals: { type: array, items: { type: string } }
+                          brokenRefs: { type: array, items: { type: string } }
+                    formulaColumns: { type: object }
+                - type: object
+                  required: [target, name, slides]
+                  properties:
+                    target: { type: string, enum: [pptx] }
+                    name: { type: string }
+                    slides: { type: array, items: { type: object } }
+                - type: object
+                  required: [target, name]
+                  properties:
+                    target: { type: string, enum: [docx] }
+                    name: { type: string }
+                    headings: { type: array, items: { type: string } }
+                    citationCount: { type: integer }
+                    dates: { type: array, items: { type: string } }
+      responses:
+        "200": { description: Verification report }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/worker:
+    get:
+      tags: [worker]
+      summary: List durable runs + recovery sweep
+      responses:
+        "200": { description: Runs }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [worker]
+      summary: Tick (claim and execute the next runnable run) or replay a run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [op]
+                  properties:
+                    op: { type: string, enum: [tick] }
+                - type: object
+                  required: [op, id]
+                  properties:
+                    op: { type: string, enum: [replay] }
+                    id: { type: string }
+      responses:
+        "200": { description: Ran run id or replay result }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/mcp:
+    get:
+      tags: [worker]
+      summary: List MCP servers (admin surface; discovery with ?discover=1)
+      responses:
+        "200": { description: Servers and tools }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+components:
+  responses:
+    Unauthorized:
+      description: No session when auth is enforced
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    BadRequest:
+      description: Invalid input
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }

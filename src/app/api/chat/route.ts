@@ -1,3 +1,9 @@
+async function secure(req: Request) {
+  const gate = await guard(req);
+  if (gate instanceof Response) return gate;
+  return gate;
+}
+
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
@@ -16,6 +22,7 @@ import { platformTools } from "@/lib/tools";
 import { ENTERPRISE_RECIPES } from "@/lib/enterprise-platforms";
 import { buildConnectedTools } from "@/lib/connector-sdk";
 
+import { guard } from "@/lib/guard";
 export const maxDuration = 30;
 
 const bodySchema = z.object({
@@ -34,6 +41,9 @@ const bodySchema = z.object({
 });
 
 export async function POST(req: Request) {
+  const denied = await secure(req);
+  if (denied instanceof Response) return denied;
+
   let body: unknown;
   try {
     body = await req.json();

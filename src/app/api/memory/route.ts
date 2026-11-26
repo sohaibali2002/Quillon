@@ -1,6 +1,13 @@
+async function secure(req: Request) {
+  const gate = await guard(req);
+  if (gate instanceof Response) return gate;
+  return gate;
+}
+
 import { z } from "zod";
 import { addMemory, deleteMemory, listMemories } from "@/lib/memory";
 
+import { guard } from "@/lib/guard";
 const scopeSchema = z.enum(["conversation", "agent"]);
 
 function badRequest(message: string, issues?: { path: string; message: string }[]) {
@@ -8,6 +15,9 @@ function badRequest(message: string, issues?: { path: string; message: string }[
 }
 
 export async function GET(req: Request) {
+  const denied = await secure(req);
+  if (denied instanceof Response) return denied;
+
   const url = new URL(req.url);
   const conversationId = url.searchParams.get("conversationId") ?? undefined;
   const scopeParam = url.searchParams.get("scope");
@@ -25,6 +35,9 @@ const createSchema = z
   .strict();
 
 export async function POST(req: Request) {
+  const denied = await secure(req);
+  if (denied instanceof Response) return denied;
+
   let body: unknown;
   try {
     body = await req.json();
@@ -43,6 +56,9 @@ export async function POST(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  const denied = await secure(req);
+  if (denied instanceof Response) return denied;
+
   const id = new URL(req.url).searchParams.get("id");
   if (!id) return badRequest("id query parameter is required.");
   if (!deleteMemory(id)) {

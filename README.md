@@ -32,6 +32,40 @@ write in a plain app, with an inspectable surface for every capability.
 - **Enterprise** — Entra ID / any-OIDC SSO, 41 connectors with AES-256-GCM
   token storage, agent memory, auto-compaction, skills and MCP.
 
+### Governance and reliability
+
+- **Authenticated API surface** — every sensitive route is gated by session
+  auth with RBAC (admin/member/viewer), Origin-based CSRF checks and an
+  append-only audit trail. Turn enforcement on with SSO config or
+  `QUILLON_REQUIRE_AUTH=1`; admins via `QUILLON_ADMIN_EMAILS`.
+- **Fail-closed secrets** — production refuses the dev fallback for signing and
+  connector-encryption keys unless `QUILLON_ALLOW_DEV_SECRET=1` is set
+  explicitly. `AUTH_SECRET_PREVIOUS` keeps rotated-key data readable.
+- **MCP restrictions** — remote servers must be http(s), never a cloud-metadata
+  endpoint, and hosts must be on `QUILLON_MCP_ALLOWED_HOSTS` when set; stdio
+  executables must be on `QUILLON_MCP_STDIO_COMMANDS`; server env vars are
+  encrypted at rest; registration is admin-only.
+- **Durable execution** — runs with per-step checkpoints survive restarts:
+  workers lease runs, expired leases are requeued, failures retry up to
+  `max_attempts` and dead-letter for one-click replay (Govern panel or
+  `POST /api/worker {"op":"replay"}`).
+- **Transactional AI** — consequential actions follow
+  plan → simulate → approve → execute → verify → compensate
+  (`src/lib/transaction.ts`, `/api/transactions`): nothing executes without
+  approval, executed steps record undo payloads, failures compensate in
+  reverse order, and every event lands in the agent replay log.
+- **Capability security** — agents act on short-lived, narrowly scoped grants
+  (`src/lib/capability.ts`), checked server-side before any connector
+  credential is touched — never by the model.
+- **Knowledge graph** — a permission-scoped business graph with provenance
+  (`src/lib/graph.ts`, `/api/graph`): entities, typed relations, source system
+  and reference per edge, multi-hop expansion for questions that span systems.
+- **Work verification engine** — spreadsheets (broken refs, hardcoded literals
+  in formula columns, formula-pattern deviations), decks (font drift,
+  overflow, missing titles) and documents (citations, structure, date
+  consistency) get auditable pass/warn/fail reports (`/api/verify`).
+
+
 ## Quick start
 
 ```bash

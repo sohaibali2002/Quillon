@@ -1,3 +1,9 @@
+async function secure(req: Request) {
+  const gate = await guard(req);
+  if (gate instanceof Response) return gate;
+  return gate;
+}
+
 // Agents: ToolLoopAgent with tool loop, step limits, structured subagents.
 // Text mode streams a UI message stream (tools appear as streamable parts in
 // the client); structured mode returns JSON.
@@ -20,6 +26,7 @@ import { platformTools } from "@/lib/tools";
 import { ENTERPRISE_RECIPES } from "@/lib/enterprise-platforms";
 import { buildConnectedTools } from "@/lib/connector-sdk";
 
+import { guard } from "@/lib/guard";
 export const maxDuration = 60;
 
 const summarySchema = z.object({
@@ -60,6 +67,9 @@ function promptFromBody(body: {
 }
 
 export async function POST(req: Request) {
+  const denied = await secure(req);
+  if (denied instanceof Response) return denied;
+
   let raw: unknown;
   try {
     raw = await req.json();

@@ -12,6 +12,7 @@
 // Sessions are HMAC-signed cookies (no dependency on a session store).
 import { createHash, createHmac, timingSafeEqual, randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
+import { requireSecret } from "@/lib/guard";
 
 export const SESSION_COOKIE = "quillon_session";
 export const PKCE_COOKIE = "quillon_pkce";
@@ -66,7 +67,11 @@ export async function discoverEndpoints(issuer: string): Promise<IdpEndpoints> {
 }
 
 export function secretKey(): string {
-  return process.env.AUTH_SECRET?.trim() || process.env.AUTH_CLIENT_SECRET?.trim() || "quillon-dev-key";
+  // Fail closed in production: the dev fallback needs an explicit opt-out.
+  return requireSecret("AUTH_SECRET", [
+    process.env.AUTH_SECRET,
+    process.env.AUTH_CLIENT_SECRET,
+  ]);
 }
 
 function b64url(input: Buffer | string): string {

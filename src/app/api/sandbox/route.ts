@@ -1,8 +1,15 @@
+async function secure(req: Request) {
+  const gate = await guard(req);
+  if (gate instanceof Response) return gate;
+  return gate;
+}
+
 // Code-execution sandbox route: runs code in any supported language as a
 // child process in a temp directory, with optional data-file ingestion.
 //   { language, code, files?: [{name, content}], stdin?, timeoutMs?, command?,
 //     captureFiles? }
 import { z } from "zod";
+import { guard } from "@/lib/guard";
 import {
   MAX_CODE_CHARS,
   MAX_FILE_CHARS,
@@ -46,6 +53,9 @@ const bodySchema = z.object({
 });
 
 export async function POST(req: Request) {
+  const denied = await secure(req);
+  if (denied instanceof Response) return denied;
+
   let raw: unknown;
   try {
     raw = await req.json();

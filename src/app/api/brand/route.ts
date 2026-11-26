@@ -1,6 +1,13 @@
+async function secure(req: Request) {
+  const gate = await guard(req);
+  if (gate instanceof Response) return gate;
+  return gate;
+}
+
 import { NextResponse } from "next/server";
 import { addAsset, deleteKit, deleteAsset, listAssets, listKits, upsertKit, cloneTemplate, saveClonedTemplate } from "@/lib/brand";
 
+import { guard } from "@/lib/guard";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
@@ -9,6 +16,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const denied = await secure(request);
+  if (denied instanceof Response) return denied;
+
   const ct = request.headers.get("content-type") ?? "";
   // Template cloning: multipart upload of a .pptx/.docx/.xlsx.
   if (ct.includes("multipart/form-data")) {
@@ -46,6 +56,9 @@ export async function POST(request: Request) {
 }
 
 export async function PUT(request: Request) {
+  const denied = await secure(request);
+  if (denied instanceof Response) return denied;
+
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body || typeof body.id !== "string") return NextResponse.json({ error: "id is required" }, { status: 400 });
   if (typeof body.assetName === "string" && typeof body.assetData === "string") {
@@ -64,6 +77,9 @@ export async function PUT(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const denied = await secure(request);
+  if (denied instanceof Response) return denied;
+
   const url = new URL(request.url);
   const kitId = url.searchParams.get("kitId");
   const assetId = url.searchParams.get("assetId");

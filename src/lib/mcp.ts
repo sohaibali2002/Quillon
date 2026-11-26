@@ -6,6 +6,7 @@ import { StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
 import type { ToolSet } from "ai";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/lib/db";
+import { encryptToken, decryptToken, connectorsSecret } from "@/lib/connectors";
 
 export type McpTransportType = "http" | "sse" | "stdio";
 
@@ -49,7 +50,7 @@ function fromRow(r: McpServerRow): McpServer {
     url: r.url,
     command: r.command,
     args: JSON.parse(r.args) as string[],
-    env: JSON.parse(r.env) as Record<string, string>,
+    env: openEnv(r.env),
     enabled: r.enabled === 1,
     createdAt: r.created_at,
   };
@@ -80,8 +81,11 @@ export function addMcpServer(input: {
     if (!input.url || !/^https?:\/\//i.test(input.url)) {
       throw new Error(`${input.transport} transport needs an http(s) url.`);
     }
+    validateMcpUrl(input.url);
   } else if (!input.command?.trim()) {
     throw new Error("stdio transport needs a command.");
+  } else {
+    validateStdioCommand(input.command.trim());
   }
   const server: McpServer = {
     id: randomUUID(),
@@ -105,7 +109,7 @@ export function addMcpServer(input: {
       server.url,
       server.command,
       JSON.stringify(server.args),
-      JSON.stringify(server.env),
+      sealEnv(server.env),
       server.createdAt,
     );
   return server;
@@ -129,6 +133,71 @@ export function qualifiedToolName(server: McpServer, toolName: string): string {
 }
 
 const CONNECT_TIMEOUT_MS = 10_000;
+
+// --- MCP security policy -----------------------------------------------------
+// Remote servers: http(s) only, never a cloud-metadata endpoint, and hosts must
+// be on the QUILLON_MCP_ALLOWED_HOSTS allowlist when one is configured (also
+// mitigates redirect-based SSRF because every target URL is re-validated here).
+// stdio servers: the executable must be on the QUILLON_MCP_STDIO_COMMANDS
+// allowlist (default: common MCP runners); registration is admin-only.
+export function validateMcpUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("MCP url is not a valid URL.");
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("MCP url must use http(s).");
+  }
+  if (/^169\.254\.169\.254/.test(parsed.hostname) || parsed.hostname === "metadata.google.internal") {
+    throw new Error("MCP url points at a cloud metadata endpoint, which is not allowed.");
+  }
+  const allow = (process.env.QUILLON_MCP_ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
+  if (allow.length && !allow.includes(parsed.hostname.toLowerCase())) {
+    throw new Error(`MCP host "${parsed.hostname}" is not on QUILLON_MCP_ALLOWED_HOSTS.`);
+  }
+}
+
+const DEFAULT_STDIO_COMMANDS = ["node", "npx", "uvx", "python3", "docker"];
+
+function validateStdioCommand(command: string): void {
+  const allow = (process.env.QUILLON_MCP_STDIO_COMMANDS ?? "")
+    .split(",")
+    .map((c) => c.trim())
+    .filter(Boolean);
+  const list = process.env.QUILLON_MCP_STDIO_COMMANDS === "" ? [] : allow.length ? allow : DEFAULT_STDIO_COMMANDS;
+  const base = command.split("/").pop() ?? command;
+  if (!list.includes(base) && !list.includes(command)) {
+    throw new Error(
+      `stdio command "${command}" is not on the allowlist (QUILLON_MCP_STDIO_COMMANDS).`,
+    );
+  }
+}
+
+// Environment variables hold credentials, so they are encrypted at rest with
+// the connector-token cipher and only decrypted for the transport.
+function sealEnv(env: Record<string, string>): string {
+  return JSON.stringify(Object.fromEntries(Object.entries(env).map(([k, v]) => [k, encryptToken(connectorsSecret(), v)])));
+}
+function openEnv(stored: string): Record<string, string> {
+  try {
+    return Object.fromEntries(
+      Object.entries(JSON.parse(stored) as Record<string, string>).map(([k, v]) => {
+        try {
+          return [k, decryptToken(connectorsSecret(), v)];
+        } catch {
+          return [k, v]; // pre-encryption rows keep working
+        }
+      }),
+    );
+  } catch {
+    return {};
+  }
+}
 
 function withTimeout<T>(p: Promise<T>, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {

@@ -1,7 +1,14 @@
+async function secure(req: Request) {
+  const gate = await guard(req);
+  if (gate instanceof Response) return gate;
+  return gate;
+}
+
 import { NextResponse } from "next/server";
 import { industryPackages } from "@/lib/industry-packages";
 import { createJob, listJobs } from "@/lib/jobs";
 
+import { guard } from "@/lib/guard";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
@@ -16,6 +23,9 @@ export async function GET() {
 
 // Enable (seed) a package's jobs: POST { packageId }.
 export async function POST(request: Request) {
+  const denied = await secure(request);
+  if (denied instanceof Response) return denied;
+
   const body = await request.json().catch(() => null) as { packageId?: string } | null;
   const pkg = industryPackages.find((p) => p.id === body?.packageId);
   if (!pkg) return NextResponse.json({ error: "unknown packageId" }, { status: 400 });

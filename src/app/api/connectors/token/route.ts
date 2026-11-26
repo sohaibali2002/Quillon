@@ -1,11 +1,21 @@
+async function secure(req: Request) {
+  const gate = await guard(req, { role: "admin" });
+  if (gate instanceof Response) return gate;
+  return gate;
+}
+
 import { NextRequest, NextResponse } from "next/server";
 import { CONNECTOR_CATALOG, saveToken } from "@/lib/connectors";
 
+import { guard } from "@/lib/guard";
 // POST /api/connectors/token — store a credential for a connector.
 // For `pat` connectors this is the token itself. For `oauth2` connectors the
 // user pastes an access token obtained from the provider's own consent screen
 // (or from your IdP); it is encrypted with AES-256-GCM before it is written.
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
+  const denied = await secure(req);
+  if (denied instanceof Response) return denied;
+
   const body = (await req.json().catch(() => null)) as
     | { connectorId?: string; token?: string; account?: string }
     | null;

@@ -1,4 +1,11 @@
+async function secure(req: Request) {
+  const gate = await guard(req, { role: "admin" });
+  if (gate instanceof Response) return gate;
+  return gate;
+}
+
 import { z } from "zod";
+import { guard } from "@/lib/guard";
 import {
   addMcpServer,
   callMcpTool,
@@ -21,6 +28,9 @@ function issues(err: z.ZodError) {
 // GET /api/mcp            -> configured servers
 // GET /api/mcp?discover=1 -> servers + live tool discovery across enabled ones
 export async function GET(req: Request) {
+  const denied = await secure(req);
+  if (denied instanceof Response) return denied;
+
   const servers = listMcpServers();
   if (new URL(req.url).searchParams.get("discover") !== "1") {
     return Response.json({ servers });
@@ -57,6 +67,9 @@ const callSchema = z
 const bodySchema = z.discriminatedUnion("action", [addSchema, toggleSchema, callSchema]);
 
 export async function POST(req: Request) {
+  const denied = await secure(req);
+  if (denied instanceof Response) return denied;
+
   let body: unknown;
   try {
     body = await req.json();
@@ -101,6 +114,9 @@ export async function POST(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  const denied = await secure(req);
+  if (denied instanceof Response) return denied;
+
   const id = new URL(req.url).searchParams.get("id");
   if (!id) return badRequest("id query parameter is required.");
   if (!deleteMcpServer(id)) {

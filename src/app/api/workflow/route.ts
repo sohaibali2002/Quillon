@@ -1,9 +1,16 @@
+async function secure(req: Request) {
+  const gate = await guard(req);
+  if (gate instanceof Response) return gate;
+  return gate;
+}
+
 // Multi-agent workflow route: orchestrator -> parallel workers -> synthesizer,
 // streamed as a UI message stream. Custom data parts (data-plan, data-task,
 // data-summary) let the panel show each stage live as it completes.
 //   Body: { prompt, model? }
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { z } from "zod";
+import { guard } from "@/lib/guard";
 import {
   runOrchestrator,
   runSynthesizer,
@@ -43,6 +50,9 @@ function promptFrom(body: { prompt?: string; messages?: unknown[] }) {
 }
 
 export async function POST(req: Request) {
+  const denied = await secure(req);
+  if (denied instanceof Response) return denied;
+
   let raw: unknown;
   try {
     raw = await req.json();
