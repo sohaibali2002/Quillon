@@ -64,6 +64,9 @@ function Shell({ children }: { children: React.ReactNode }) {
 
   // Phone: the rail only exists while the sheet is open, so its buttons can
   // never shadow identically-named controls in the main surface.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   useEffect(() => {
     if (!navOpen) {
       setRailShown(false);
@@ -114,8 +117,8 @@ function Shell({ children }: { children: React.ReactNode }) {
         Skip to answer
       </a>
 
-      {(isDesktop || navOpen) && (
-        <aside className="lx-rail" data-open={isDesktop || railShown} aria-label="Quillon">
+      {isDesktop && (
+        <aside className="lx-rail" data-open={isDesktop && railShown} aria-label="Quillon">
           <Link href="/" className="lx-home" aria-label="Quillon home">
             <BrandMark />
             <span className="lx-wordmark">Quillon</span>
@@ -189,7 +192,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       <button
         type="button"
         className="lx-scrim"
-        data-open={navOpen || Boolean(active)}
+        data-open={mounted ? navOpen || Boolean(active) : false}
         aria-label="Close panel"
         tabIndex={-1}
         onClick={() => {
@@ -209,7 +212,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         role="dialog"
         aria-modal="false"
         aria-label={active ? active.label : "Tools"}
-        aria-hidden={!active}
+        aria-hidden={mounted ? !active : true}
         tabIndex={-1}
       >
         {active && (

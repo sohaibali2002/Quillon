@@ -329,6 +329,13 @@ const MIGRATIONS = [
     `,
   },
   {
+    id: 14,
+    name: "transaction-approver",
+    sql: `
+      ALTER TABLE transactions ADD COLUMN approved_by TEXT;
+    `,
+  },
+  {
     id: 13,
     name: "verification-reports",
     sql: `

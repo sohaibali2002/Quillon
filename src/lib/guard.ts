@@ -3,10 +3,15 @@
 // configured or QUILLON_REQUIRE_AUTH=1; local development stays open.
 import { getDb } from "@/lib/db";
 import { readSession, ssoConfig, type Session } from "@/lib/auth";
+import { roleOf as baseRoleOf, orgForSession as tenantOrgOf, type Role } from "@/lib/rbac";
 
-export type Role = "admin" | "member" | "viewer";
-
-const ROLE_RANK: Record<Role, number> = { viewer: 1, member: 2, admin: 3 };
+export type { Role };
+// Env-designated admins rank as admin even without an IdP role claim.
+export function roleOf(session: Session): Role {
+  return isAdmin(session) ? "admin" : baseRoleOf(session);
+}
+// Tenant key for per-org data (knowledge graph, audit rows).
+export const orgForSession = tenantOrgOf;
 
 export function authEnforced(): boolean {
   if (process.env.QUILLON_REQUIRE_AUTH === "1") return true;
@@ -24,6 +29,13 @@ export function isAdmin(session: Session | null): boolean {
   if (!session) return false;
   if (session.roles?.includes("admin")) return true;
   return adminEmails().includes(session.email?.toLowerCase());
+}
+
+// Open mode (an implicit admin session with no identity provider) exists only
+// for local development. A production build must opt in explicitly — a server
+// that is merely missing its SSO configuration never silently opens up.
+export function openModeAllowed(): boolean {
+  return process.env.NODE_ENV !== "production" || process.env.QUILLON_OPEN_MODE === "1";
 }
 
 function unauthorized() {
@@ -66,14 +78,21 @@ export async function guard(
   req: Request,
   opts: { role?: Role } = {},
 ): Promise<Session | Response> {
-  if (!authEnforced()) return OPEN_SESSION;
+  if (!authEnforced()) {
+    if (!openModeAllowed()) {
+      // Fail closed: a locked production server with no IdP must reject rather
+      // than hand out an implicit admin session.
+      return unauthorized();
+    }
+    return OPEN_SESSION;
+  }
   const csrf = csrfCheck(req);
   if (csrf) return csrf;
   const session = await readSession();
   if (!session) return unauthorized();
   if (opts.role) {
-    const have = isAdmin(session) ? ROLE_RANK.admin : ROLE_RANK.member;
-    if (have < ROLE_RANK[opts.role]) return forbidden();
+    const rank: Record<Role, number> = { viewer: 1, member: 2, admin: 3 };
+    if (rank[roleOf(session)] < rank[opts.role]) return forbidden();
   }
   return session;
 }

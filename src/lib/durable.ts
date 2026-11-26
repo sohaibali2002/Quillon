@@ -126,10 +126,26 @@ function firstIncompleteStep(runId: string): number {
   return row.seq ?? -1;
 }
 
+// Extend this worker's lease. Returns false when the worker no longer owns the
+// run (lease expired, another worker claimed it) — the caller must stop.
+function renewLease(runId: string, workerId: string): boolean {
+  const lease = new Date(Date.now() + LEASE_MS).toISOString();
+  const res = getDb()
+    .prepare("UPDATE durable_runs SET lease_until=? WHERE id=? AND worker_id=? AND status='running'")
+    .run(lease, runId, workerId);
+  return res.changes > 0;
+}
+
+class LeaseLostError extends Error {
+  constructor() {
+    super("Lease lost: another worker claimed this run.");
+  }
+}
+
 // Execute a claimed run: skip completed steps, run the rest, checkpointing
 // after each. On failure, retry (back to pending with delay via lease expiry)
 // until max_attempts, then dead-letter.
-export async function tick(workerId = `w-${process.pid}`): Promise<string | null> {
+export async function tick(workerId = `w-${process.pid}`, opts: { heartbeatMs?: number } = {}): Promise<string | null> {
   const claimed = claimNext(workerId);
   if (!claimed) return null;
   const db = getDb();
@@ -143,20 +159,32 @@ export async function tick(workerId = `w-${process.pid}`): Promise<string | null
   }
   const stepDefs = defs;
   const start = firstIncompleteStep(id);
+  // Heartbeat: renew the lease every LEASE_MS/3 so a long-running step (longer
+  // than the base lease) is not stolen by another worker mid-execution. If the
+  // lease is lost anyway, this worker aborts without writing run state — the
+  // step may be re-executed by the new owner, so results stay single-writer.
+  let leaseLost = false;
+  const heartbeat = setInterval(() => {
+    if (!renewLease(id, workerId)) leaseLost = true;
+  }, Math.max(20, opts.heartbeatMs ?? LEASE_MS / 3));
+  heartbeat.unref?.();
   try {
     let ctx: { checkpoint: unknown } = { checkpoint: claimed.checkpoint };
     for (let seq = start; seq >= 0 && seq < stepDefs.length; seq++) {
+      if (leaseLost) throw new LeaseLostError();
       const def = stepDefs[seq];
       const started = new Date().toISOString();
       db.prepare("UPDATE durable_steps SET status='running', started_at=? WHERE run_id=? AND seq=?").run(started, id, seq);
       try {
         const output = await def.run(claimed.input, ctx);
+        if (leaseLost) throw new LeaseLostError();
         db.prepare("UPDATE durable_steps SET status='done', output=?, finished_at=? WHERE run_id=? AND seq=?")
           .run(JSON.stringify(output ?? null), new Date().toISOString(), id, seq);
         ctx = { checkpoint: { lastStep: def.name, output } };
         db.prepare("UPDATE durable_runs SET checkpoint=?, updated_at=? WHERE id=?")
           .run(JSON.stringify({ lastStep: def.name, output }), new Date().toISOString(), id);
       } catch (err) {
+        if (err instanceof LeaseLostError) throw err;
         const message = err instanceof Error ? err.message : String(err);
         db.prepare("UPDATE durable_steps SET status='error', error=?, finished_at=? WHERE run_id=? AND seq=?")
           .run(message, new Date().toISOString(), id, seq);
@@ -171,11 +199,17 @@ export async function tick(workerId = `w-${process.pid}`): Promise<string | null
     }
     return id;
   } catch (err) {
+    if (err instanceof LeaseLostError) {
+      // The run now belongs to another worker; leave its state untouched.
+      return id;
+    }
     const message = err instanceof Error ? err.message : String(err);
     const dead = claimed.attempts >= claimed.max_attempts;
     db.prepare("UPDATE durable_runs SET status=?, error=?, updated_at=? WHERE id=?")
       .run(dead ? "dead" : "pending", message, new Date().toISOString(), id);
     return id;
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 

@@ -61,8 +61,11 @@ export async function POST(req: Request) {
       case "simulate":
         return Response.json({ transaction: await simulate(body.id) });
       case "approve": {
-        const tx = approve(body.id, body.approved);
-        audit(req, gate, body.approved ? "transaction.approve" : "transaction.reject", body.id);
+        // In open mode (local dev only, never production) the same implicit
+        // operator plans and approves, so it signs with its own role label.
+        const approver = gate.sub === "open" ? "open-mode-operator" : gate.email;
+        const tx = approve(body.id, body.approved, approver ?? undefined);
+        audit(req, gate, body.approved ? "transaction.approve" : "transaction.reject", body.id, { approver });
         return Response.json({ transaction: tx });
       }
       case "execute": {

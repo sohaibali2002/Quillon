@@ -1,7 +1,7 @@
 // Knowledge graph API: search entities, expand relationships with provenance,
 // upsert entities and edges (admin) and read graph stats.
 import { z } from "zod";
-import { guard, audit } from "@/lib/guard";
+import { guard, audit, orgForSession } from "@/lib/guard";
 import { searchEntities, expand, getEntity, upsertEntity, addEdge, graphStats } from "@/lib/graph";
 
 export const maxDuration = 30;
@@ -10,7 +10,7 @@ export async function GET(req: Request) {
   const gate = await guard(req);
   if (gate instanceof Response) return gate;
   const url = new URL(req.url);
-  const org = "default";
+  const org = orgForSession(gate);
   const q = url.searchParams.get("q");
   const type = url.searchParams.get("type") ?? undefined;
   const id = url.searchParams.get("id");
@@ -51,7 +51,7 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return Response.json({ error: { message: "Invalid graph operation." } }, { status: 400 });
   }
-  const org = "default";
+  const org = orgForSession(gate);
   const body = parsed.data;
   if (body.op === "upsert") {
     const e = upsertEntity(org, body.type, body.name, body.attrs, body.confidence ?? 1);

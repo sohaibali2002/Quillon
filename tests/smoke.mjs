@@ -19,7 +19,7 @@ async function main() {
   // can signal npx AND the next-server child. Killing only npx orphans the server
   // on PORT, which then blocks later runs and looks like a second local app.
   const server = spawn("npx", ["next", "start", "-p", String(PORT)], {
-    env: { ...process.env, AI_MOCK: "1" },
+    env: { ...process.env, AI_MOCK: "1", QUILLON_OPEN_MODE: "1" },
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });
@@ -478,6 +478,79 @@ async function main() {
     addEdge("default", e1.id, "has_deal", e2.id, "salesforce", "deal-123");
     const got = expand("default", [e1.id]);
     record("knowledge graph links entities with provenance", got.edges.some((ed) => ed.source_system === "salesforce" && ed.source_ref === "deal-123"), `edges=${got.edges.length}`);
+
+    // ---- Regression tests for the governance fixes (commit review findings) ----
+    const { rbac } = { rbac: await import("../src/lib/rbac.ts") };
+    const { roleOf, orgForSession } = rbac;
+    const { enqueueRun, getRun, registerRunKind, drain, tick } = await import("../src/lib/durable.ts");
+
+    // 1. RBAC: a viewer must not be promoted to member.
+    record(
+      "RBAC: viewer role resolves to viewer, not member",
+      roleOf({ sub: "v1", name: "V", email: "v@x.io", roles: ["viewer"], exp: 0 }) === "viewer",
+    );
+    record(
+      "RBAC: unprivileged session resolves to member",
+      roleOf({ sub: "m1", name: "M", email: "m@x.io", roles: [], exp: 0 }) === "member",
+    );
+
+    // 2. Capability max-uses holds under concurrent claims (atomic check+increment).
+    grantCapability({ subject: "race-agent", connector: "smoke", action: "ping", ttlSeconds: 60, maxUses: 5 });
+    const claims = await Promise.all(Array.from({ length: 12 }, () => checkCapability("race-agent", "smoke", "ping", "acme")));
+    const wins = claims.filter((c) => c.ok).length;
+    record("capability max-uses atomic under concurrency", wins === 5, `wins=${wins} (expected exactly 5 of 12)`);
+
+    // 3. Separation of duties: the maker cannot approve their own transaction.
+    const sodTx = planTransaction("SoD tx", "maker cannot approve", [
+      { kind: "smoke.append", target: "log", payload: { v: "sod" } },
+    ], "maker@example.com");
+    await simulate(sodTx.id);
+    let sodRejected = false;
+    try {
+      approve(sodTx.id, true, "maker@example.com");
+    } catch (e) {
+      sodRejected = /Separation of duties/.test(e instanceof Error ? e.message : String(e));
+    }
+    record("transaction: maker cannot approve own transaction", sodRejected);
+    const sodOk = approve(sodTx.id, true, "checker@example.com");
+    record("transaction: a different approver can approve", sodOk.status === "executing", `status=${sodOk.status}`);
+    await execute(sodTx.id);
+
+    // 4. Tenant scoping helper: same domain shares an org, different domains don't.
+    record(
+      "graph org scoping: domain-tenant, open-mode default",
+      orgForSession({ sub: "a", name: "A", email: "a@corp.io", roles: [], exp: 0 }) === "corp.io" &&
+        orgForSession({ sub: "b", name: "B", email: "b@corp.io", roles: [], exp: 0 }) === "corp.io" &&
+        orgForSession({ sub: "c", name: "C", email: "c@other.io", roles: [], exp: 0 }) === "other.io" &&
+        orgForSession({ sub: "open", name: "O", email: "open@quillon.local", roles: ["admin"], exp: 0 }) === "default",
+    );
+
+    // 5. Durable execution: long step outlives the 60s base lease via heartbeat.
+    registerRunKind("smoke.slow", [
+      { name: "slow", run: async () => { await new Promise((r) => setTimeout(r, 1400)); return "slept"; } },
+    ]);
+    await drain(50); // clear leftover pending runs from earlier invocations
+    const slowSteps = [
+      { name: "slow", run: async () => { await new Promise((r) => setTimeout(r, 1400)); return "slept"; } },
+    ];
+    registerRunKind("smoke.slow", slowSteps);
+    const slowId = enqueueRun("smoke.slow", {}, slowSteps);
+    const running = tick("w-slow", { heartbeatMs: 100 });
+    for (let i = 0; i < 40 && getRun(slowId).status !== "running"; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const { DatabaseSync } = await import("node:sqlite");
+    const sdb = new DatabaseSync(".data/quillon.db");
+    const leaseRow1 = sdb.prepare("SELECT lease_until FROM durable_runs WHERE id=?").get(slowId);
+    const lease1 = leaseRow1 ? Date.parse(leaseRow1.lease_until) : 0;
+    await new Promise((r) => setTimeout(r, 300));
+    const leaseRow2 = sdb.prepare("SELECT lease_until FROM durable_runs WHERE id=?").get(slowId);
+    const lease2 = leaseRow2 ? Date.parse(leaseRow2.lease_until) : 0;
+    sdb.close();
+    record("durable: heartbeat renews the lease while a step runs", lease2 > lease1, `lease1=${lease1} lease2=${lease2}`);
+    await running;
+    const slowRun = getRun(slowId);
+    record("durable: step longer than base lease completes", slowRun.status === "done", `status=${slowRun.status} error=${slowRun.error}`);
 
     // ---- Contract check: implemented routes match openapi.yaml ----
     const yamlText = (await import("node:fs")).readFileSync("openapi.yaml", "utf8");

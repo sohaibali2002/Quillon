@@ -98,8 +98,18 @@ export function checkCapability(
   if (withUses.max_uses !== null && withUses.used_count >= withUses.max_uses) {
     return { ok: false, reason: "Capability exhausted (max uses reached)." };
   }
-  db.prepare("UPDATE capabilities SET used_count = used_count + 1 WHERE id = ?").run(withUses.id);
-  return { ok: true, capability: withUses };
+  // Check and increment in one atomic statement: concurrent callers race on the
+  // WHERE clause, and only one wins when the grant is down to its last use.
+  const claim =
+    withUses.max_uses === null
+      ? db.prepare("UPDATE capabilities SET used_count = used_count + 1 WHERE id = ?").run(withUses.id)
+      : db
+          .prepare("UPDATE capabilities SET used_count = used_count + 1 WHERE id = ? AND used_count < max_uses")
+          .run(withUses.id);
+  if (claim.changes === 0) {
+    return { ok: false, reason: "Capability exhausted (max uses reached)." };
+  }
+  return { ok: true, capability: getCapability(withUses.id) ?? withUses };
 }
 
 export function revokeCapability(id: string): boolean {

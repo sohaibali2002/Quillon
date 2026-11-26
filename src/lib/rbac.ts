@@ -1,0 +1,24 @@
+// Pure RBAC and tenancy helpers — no Next.js imports, so engine unit tests can
+// load this module directly under plain Node.
+export type Role = "admin" | "member" | "viewer";
+
+export function isAdmin(session: { roles?: string[]; email?: string } | null): boolean {
+  if (!session) return false;
+  return session.roles?.includes("admin") ?? false;
+}
+
+export function roleOf(session: { roles?: string[] }): Role {
+  const roles = session.roles ?? [];
+  if (roles.includes("admin")) return "admin";
+  if (roles.includes("viewer")) return "viewer";
+  return "member";
+}
+
+// Tenant key for per-org data (knowledge graph, audit rows). Authenticated
+// users are scoped to their email's domain — the enterprise tenancy boundary —
+// and open mode (local dev only) shares the single "default" org.
+export function orgForSession(session: { sub: string; email?: string }): string {
+  if (session.sub === "open") return "default";
+  const domain = session.email?.split("@")[1]?.toLowerCase().trim();
+  return domain || `user:${session.sub}`;
+}

@@ -49,6 +49,7 @@ export interface Transaction {
   id: string;
   title: string;
   intent: string;
+  created_by: string | null;
   status:
     | "planned" | "simulated" | "awaiting_approval" | "executing"
     | "verifying" | "done" | "failed" | "compensated" | "rejected";
@@ -85,6 +86,7 @@ function rowToTx(row: Record<string, unknown>): Transaction {
     id: String(row.id),
     title: String(row.title),
     intent: String(row.intent),
+    created_by: (row.created_by as string | null) ?? null,
     status: row.status as Transaction["status"],
     simulation: row.simulation ? JSON.parse(String(row.simulation)) : null,
     verification: row.verification ? JSON.parse(String(row.verification)) : null,
@@ -162,16 +164,25 @@ export async function simulate(id: string): Promise<Transaction> {
 }
 
 // Approve / reject. Only a transaction in awaiting_approval can be approved.
-export function approve(id: string, approved: boolean): Transaction {
+// Separation of duties: the maker of a transaction can never approve or reject
+// it — a second identity must sign off before anything executes.
+export function approve(id: string, approved: boolean, approver?: string): Transaction {
   const tx = getTransaction(id);
   if (!tx) throw new Error("Unknown transaction.");
   if (tx.status !== "awaiting_approval") {
     throw new Error(`Cannot ${approved ? "approve" : "reject"} a transaction in status ${tx.status}.`);
   }
+  if (
+    approver &&
+    tx.created_by &&
+    approver.trim().toLowerCase() === tx.created_by.trim().toLowerCase()
+  ) {
+    throw new Error("Separation of duties: the maker of a transaction cannot approve it.");
+  }
   getDb()
-    .prepare("UPDATE transactions SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?")
-    .run(approved ? "executing" : "rejected", id);
-  replay(id, approved ? "approved" : "rejected", {});
+    .prepare("UPDATE transactions SET status=?, approved_by=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?")
+    .run(approved ? "executing" : "rejected", approver ?? null, id);
+  replay(id, approved ? "approved" : "rejected", { approver: approver ?? null });
   return getTransaction(id)!;
 }
 
