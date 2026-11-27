@@ -55,6 +55,9 @@ function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const params = useSearchParams();
   const active = panels.find((p) => p.id === params.get("panel")) ?? null;
+  const activeGroup = active
+    ? navGroups.find((group) => group.panelIds.some((panelId) => panelId === active.id))
+    : undefined;
   const drawerRef = useRef<HTMLElement | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [isDesktop, setIsDesktop] = useState(true);
@@ -129,7 +132,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       </a>
 
       {(isDesktop || navOpen) && (
-        <aside className="lx-rail" data-open={isDesktop || railShown} aria-label="Quillon">
+          <aside className="lx-rail" data-open={isDesktop || railShown} aria-label="Quillon workspace navigation">
           <Link href="/" className="lx-home" aria-label="Quillon home">
             <BrandMark />
             <span className="lx-brand-copy">
@@ -195,6 +198,7 @@ function Shell({ children }: { children: React.ReactNode }) {
                           >
                             {panel.icon}
                             <span>{panel.label}</span>
+                            <kbd className="lx-tool-shortcut" aria-hidden="true">Alt {panel.key}</kbd>
                           </button>
                         </li>
                       );
@@ -205,8 +209,16 @@ function Shell({ children }: { children: React.ReactNode }) {
             })}
           </nav>
           <div className="lx-rail-foot">
+            <div className="lx-rail-help">
+              <span className="lx-rail-help-icon" aria-hidden="true">{icon("M12 18h.01M9.1 9a3 3 0 1 1 5.2 2c-1.3 1.2-2.3 1.7-2.3 3")}</span>
+              <span>
+                <strong>Quick navigation</strong>
+                <span><kbd>Alt</kbd> + a key opens a capability</span>
+              </span>
+            </div>
             <a href="https://ai-sdk.dev" target="_blank" rel="noreferrer">
-              AI SDK docs
+              <span>AI SDK documentation</span>
+              {icon("M7 17 17 7M7 7h10v10")}
             </a>
           </div>
         </aside>
@@ -262,15 +274,20 @@ function Shell({ children }: { children: React.ReactNode }) {
         role="dialog"
         aria-modal="false"
         aria-label={active ? active.label : "Tools"}
+        aria-labelledby={active ? "lx-drawer-title" : undefined}
         aria-hidden={mounted ? !active : true}
         tabIndex={-1}
       >
         {active && (
           <>
             <header className="lx-drawer-head">
-              <div>
-                <h2>{active.label}</h2>
-                <p>{active.hint}</p>
+              <div className="lx-drawer-heading">
+                <span className="lx-drawer-icon" aria-hidden="true">{active.icon}</span>
+                <div className="lx-drawer-copy">
+                  <p className="lx-drawer-kicker">{activeGroup?.label ?? "Workspace"}<span aria-hidden="true">/</span> Alt + {active.key}</p>
+                  <h2 id="lx-drawer-title">{active.label}</h2>
+                  <p>{active.hint}</p>
+                </div>
               </div>
               <button type="button" className="lx-close" onClick={() => open(null)} aria-label={`Close ${active.label}`}>
                 {icon("M6 6l12 12M18 6L6 18")}

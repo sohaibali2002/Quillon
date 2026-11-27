@@ -2,37 +2,64 @@
    Tokens first; every colour, size and space below comes from this block. */
 
 :root {
-  /* Palette: Field Notes — warm paper, graphite ink, and considered green. */
-  --bg: #f2f1ec;
-  --bg-deep: #e8e8e1;
-  --surface: #fbfaf7;
-  --surface-2: #e9ece6;
-  --well: #f7f6f0;
-  --line: #d8ddd5;
-  --line-strong: #b8c3ba;
-  /* Legacy aliases kept for the migrated panel rules. */
+  /* Semantic palette: mineral neutrals, clear text roles, and a botanical accent. */
+  --color-background: #f3f6f4;
+  --color-background-subtle: #e9efec;
+  --color-surface: #fbfdfb;
+  --color-surface-raised: #e8efeb;
+  --color-surface-inset: #f4f8f5;
+  --color-border: #d5e0da;
+  --color-border-strong: #b6c7bd;
+  --color-foreground: #17231e;
+  --color-text: #34443d;
+  --color-muted: #607169;
+  --color-subtle: #819189;
+  --color-accent: #28765b;
+  --color-accent-strong: #1d5c45;
+  --color-accent-foreground: #ffffff;
+  --color-accent-muted: #e1efe7;
+  --color-success: #2d704c;
+  --color-success-soft: #e5f1e8;
+  --color-success-border: #b2d2bb;
+  --color-warning: #805800;
+  --color-warning-soft: #f7efd9;
+  --color-warning-border: #dfca95;
+  --color-danger: #a33e39;
+  --color-danger-soft: #f8e9e7;
+  --color-danger-border: #e2b8b4;
+  --color-focus: rgba(40, 107, 85, 0.2);
+  --color-overlay: rgba(18, 28, 26, 0.42);
+
+  /* Legacy aliases keep existing feature panels on the shared token system. */
+  --bg: var(--color-background);
+  --bg-deep: var(--color-background-subtle);
+  --surface: var(--color-surface);
+  --surface-2: var(--color-surface-raised);
+  --well: var(--color-surface-inset);
+  --line: var(--color-border);
+  --line-strong: var(--color-border-strong);
   --border: var(--line);
   --panel: var(--surface);
   --ink: var(--heading);
-  --heading: #17211f;
-  --text: #34413e;
-  --muted: #63716c;
-  --faint: #818c85;
-  --accent: #286b55;
-  --accent-strong: #1e5543;
-  --accent-ink: #ffffff;
-  --accent-wash: #e0ece5;
-  --ok: #2d704c;
-  --ok-wash: #e5f1e8;
-  --ok-line: #b2d2bb;
-  --warn: #805800;
-  --warn-wash: #f7efd9;
-  --warn-line: #dfca95;
-  --err: #a33e39;
-  --err-wash: #f8e9e7;
-  --err-line: #e2b8b4;
-  --focus-ring: rgba(40, 107, 85, 0.2);
-  --scrim: rgba(18, 28, 26, 0.42);
+  --heading: var(--color-foreground);
+  --text: var(--color-text);
+  --muted: var(--color-muted);
+  --faint: var(--color-subtle);
+  --accent: var(--color-accent);
+  --accent-strong: var(--color-accent-strong);
+  --accent-ink: var(--color-accent-foreground);
+  --accent-wash: var(--color-accent-muted);
+  --ok: var(--color-success);
+  --ok-wash: var(--color-success-soft);
+  --ok-line: var(--color-success-border);
+  --warn: var(--color-warning);
+  --warn-wash: var(--color-warning-soft);
+  --warn-line: var(--color-warning-border);
+  --err: var(--color-danger);
+  --err-wash: var(--color-danger-soft);
+  --err-line: var(--color-danger-border);
+  --focus-ring: var(--color-focus);
+  --scrim: var(--color-overlay);
 
   /* Data series (categorical, small set). */
   --data-1: #0f6b5c;

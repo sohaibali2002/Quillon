@@ -471,10 +471,10 @@ export default function Ask() {
         {header}
         <main className="chat-empty-page">
           <section className="chat-intro" aria-labelledby="chat-intro-title">
-            <p className="chat-kicker"><span aria-hidden="true" /> A clearer way through the work</p>
-            <h2 id="chat-intro-title">What are you working on today?</h2>
+            <p className="chat-kicker"><span aria-hidden="true" /> Your AI workspace</p>
+            <h2 id="chat-intro-title">Bring your work. Leave with clarity.</h2>
             <p className="chat-lede">
-              Bring a document, explore an idea, or hand off a task. Your model, tools, and context stay together in one focused workspace.
+              Ask about a file, explore a dataset, or hand off a task. Your models, tools, and working context stay together from the first question to the final answer.
             </p>
           </section>
           {!configLoading && models.length === 0 && (
