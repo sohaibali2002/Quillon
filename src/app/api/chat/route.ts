@@ -16,7 +16,7 @@ import type { AnswerMetadata } from "@/lib/ai-types";
 import { compactIfNeeded, compactionContext } from "@/lib/compaction";
 import { createMemoryTools, memoryContext } from "@/lib/memory";
 import { mcpToolset } from "@/lib/mcp";
-import { listProviders, resolveModelAny } from "@/lib/models";
+import { ModelConfigurationError, resolveModelAny } from "@/lib/models";
 import { skillsContext } from "@/lib/skills";
 import { platformTools } from "@/lib/tools";
 import { ENTERPRISE_RECIPES } from "@/lib/enterprise-platforms";
@@ -71,6 +71,16 @@ export async function POST(req: Request) {
   }
 
   const { messages, model, conversationId, skills } = parsed.data;
+  const modelId = model?.trim() || undefined;
+  let resolvedModel: Awaited<ReturnType<typeof resolveModelAny>>;
+  try {
+    resolvedModel = await resolveModelAny(modelId);
+  } catch (error) {
+    if (error instanceof ModelConfigurationError) {
+      return Response.json({ error: { message: error.message } }, { status: error.statusCode });
+    }
+    throw error;
+  }
 
   // Auto compaction: if the thread outgrew the budget, older turns are folded
   // into a persisted summary and only recent turns are sent verbatim.
@@ -97,7 +107,7 @@ export async function POST(req: Request) {
     .join("\n\n");
 
   const result = streamText({
-    model: await resolveModelAny(model),
+    model: resolvedModel,
     system,
     tools: { ...platformTools, ...buildConnectedTools(ENTERPRISE_RECIPES), ...createMemoryTools(conversationId), ...mcp.tools },
     messages: await convertToModelMessages(keptMessages),
@@ -115,10 +125,10 @@ export async function POST(req: Request) {
       // Provider-native citations (web search, grounding) stream as source parts.
       sendSources: true,
       messageMetadata: ({ part }): AnswerMetadata | undefined => {
-        if (part.type === "start") return { model: model ?? null, startedAt };
+        if (part.type === "start") return { model: modelId ?? null, startedAt };
         if (part.type === "finish") {
           return {
-            model: model ?? null,
+            model: modelId ?? null,
             startedAt,
             ms: Date.now() - startedAt,
             inputTokens: part.totalUsage.inputTokens ?? null,

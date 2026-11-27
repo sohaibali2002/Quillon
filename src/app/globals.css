@@ -2,37 +2,37 @@
    Tokens first; every colour, size and space below comes from this block. */
 
 :root {
-  /* Palette: Answer Ledger — one deep teal accent on warm paper. */
-  --bg: #f6f7f4;
-  --bg-deep: #eceee8;
-  --surface: #ffffff;
-  --surface-2: #eff1ec;
-  --well: #fbfbf9;
-  --line: #dfe2da;
-  --line-strong: #c3c8bd;
+  /* Palette: Field Notes — warm paper, graphite ink, and considered green. */
+  --bg: #f2f1ec;
+  --bg-deep: #e8e8e1;
+  --surface: #fbfaf7;
+  --surface-2: #e9ece6;
+  --well: #f7f6f0;
+  --line: #d8ddd5;
+  --line-strong: #b8c3ba;
   /* Legacy aliases kept for the migrated panel rules. */
   --border: var(--line);
   --panel: var(--surface);
   --ink: var(--heading);
-  --heading: #101822;
-  --text: #1f2937;
-  --muted: #566070;
-  --faint: #6b7380;
-  --accent: #0f6b5c;
-  --accent-strong: #0b5649;
+  --heading: #17211f;
+  --text: #34413e;
+  --muted: #63716c;
+  --faint: #818c85;
+  --accent: #286b55;
+  --accent-strong: #1e5543;
   --accent-ink: #ffffff;
-  --accent-wash: #e3f0ec;
-  --ok: #1d6b3f;
-  --ok-wash: #e6f2ea;
-  --ok-line: #b5d6c1;
-  --warn: #8a5a00;
-  --warn-wash: #fbf2de;
-  --warn-line: #e6cf9c;
-  --err: #a8322d;
-  --err-wash: #fbeceb;
-  --err-line: #eab9b6;
-  --focus-ring: rgba(15, 107, 92, 0.18);
-  --scrim: rgba(16, 24, 34, 0.38);
+  --accent-wash: #e0ece5;
+  --ok: #2d704c;
+  --ok-wash: #e5f1e8;
+  --ok-line: #b2d2bb;
+  --warn: #805800;
+  --warn-wash: #f7efd9;
+  --warn-line: #dfca95;
+  --err: #a33e39;
+  --err-wash: #f8e9e7;
+  --err-line: #e2b8b4;
+  --focus-ring: rgba(40, 107, 85, 0.2);
+  --scrim: rgba(18, 28, 26, 0.42);
 
   /* Data series (categorical, small set). */
   --data-1: #0f6b5c;

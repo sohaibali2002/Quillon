@@ -1,52 +1,42 @@
-"use client";
-
-import { useEffect, useState } from "react";
-
 type ProviderStatus = {
   id: string;
   label: string;
-  envVar: string;
   available: boolean;
-  freeTier?: boolean;
+  freeTier: boolean;
 };
 
-type Config = {
-  gateway: { requiredEnvVar: string; set: boolean };
-  providers?: ProviderStatus[];
+type ModelOption = { provider: string; providerLabel: string; id: string };
+
+type Props = {
+  models: ModelOption[];
+  providers: ProviderStatus[];
+  loading: boolean;
+  error?: Error;
+  modelErrors: string[];
 };
 
-export default function ModeBadge() {
-  const [mock, setMock] = useState<boolean | null>(null);
-  const [providers, setProviders] = useState<ProviderStatus[]>([]);
-
-  useEffect(() => {
-    fetch("/api/config")
-      .then((r) => r.json())
-      .then((c: Config) => {
-        const configuredProviders = c.providers ?? [];
-        setProviders(configuredProviders);
-        setMock(!c.gateway.set && !configuredProviders.some((provider) => provider.available));
-      })
-      .catch(() => setMock(true));
-  }, []);
-
-  if (mock === null) return null;
-
-  const live = providers.filter((provider) => provider.available);
-  const free = live.filter((provider) => provider.freeTier);
-  const detail =
-    live.length > 0
-      ? `Connected: ${live.map((provider) => provider.label).join(", ")}${free.length ? ` · free-tier routes: ${free.map((provider) => provider.label).join(", ")}` : ""}`
-      : "No provider credentials detected in this environment";
+export default function ModeBadge({ models, providers, loading, error, modelErrors }: Props) {
+  const connected = providers.filter((provider) => provider.available);
+  const availableProviders = new Set(models.map((model) => model.provider));
+  const active = connected.filter((provider) => availableProviders.has(provider.id));
+  const status = loading ? "loading" : models.length > 0 ? "ready" : connected.length > 0 || error || modelErrors.length > 0 ? "warning" : "offline";
+  const label = loading
+    ? "Checking models"
+    : models.length > 0
+      ? `${models.length} ${models.length === 1 ? "model" : "models"} available`
+      : connected.length > 0
+        ? "No models found"
+        : "Provider needed";
+  const detail = active.length > 0
+    ? `Available from ${active.map((provider) => provider.label).join(", ")}`
+    : modelErrors.length > 0
+      ? modelErrors.join(" ")
+      : error?.message ?? "Connect a provider to load models.";
 
   return (
-    <span
-      className={`badge ${mock ? "badge-mock" : "badge-live"}`}
-      role="status"
-      title={detail}
-    >
-      <span className="chip-dot" style={{ background: "currentColor" }} aria-hidden="true" />
-      {mock ? "Mock mode" : "Live"}
+    <span className="chat-model-status" data-state={status} role="status" title={detail}>
+      <span aria-hidden="true" />
+      {label}
     </span>
   );
 }

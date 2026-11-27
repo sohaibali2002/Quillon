@@ -1,5 +1,5 @@
-// Smoke test: starts the built server in mock mode, exercises every route,
-// writes metrics to tests/smoke-results.json. No provider key needed.
+// Smoke test: exercises route validation and infrastructure without making live
+// model calls. Provider inference is tested through the application preview.
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 
@@ -19,7 +19,7 @@ async function main() {
   // can signal npx AND the next-server child. Killing only npx orphans the server
   // on PORT, which then blocks later runs and looks like a second local app.
   const server = spawn("npx", ["next", "start", "-p", String(PORT)], {
-    env: { ...process.env, AI_MOCK: "1", QUILLON_OPEN_MODE: "1" },
+    env: { ...process.env, QUILLON_OPEN_MODE: "1" },
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });
@@ -61,24 +61,14 @@ async function main() {
     if (!up.ok) throw new Error(`server not up: ${up.status}`);
     const cfg = await up.json();
     const modelIds = new Set((cfg.models ?? []).map((model) => model.id));
-    const freeRoutes = ["cerebras/gpt-oss-120b", "groq/llama-3.3-70b-versatile", "openrouter/openrouter/free"];
-    record("GET /api/config", typeof cfg.defaultModel === "string" && freeRoutes.every((id) => modelIds.has(id)), `defaultModel=${cfg.defaultModel}, models=${cfg.models.length}`);
-
-    const gen = await fetch(`${BASE}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "hello" }),
-    });
-    const genBody = await gen.json();
-    record("POST /api/generate (mock)", gen.ok && typeof genBody.text === "string" && genBody.usage?.totalTokens > 0, `finishReason=${genBody.finishReason}, totalTokens=${genBody.usage?.totalTokens}`);
-
-    const chat = await fetch(`${BASE}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "hi" }] }] }),
-    });
-    const chatText = await chat.text();
-    record("POST /api/chat (mock stream)", chat.ok && chatText.length > 0, `content-type=${chat.headers.get("content-type")}, ${chatText.length} bytes`);
+    const connected = new Set((cfg.providers ?? []).filter((provider) => provider.available).map((provider) => provider.id));
+    const defaultIsListed = cfg.defaultModel === "" ? modelIds.size === 0 : modelIds.has(cfg.defaultModel);
+    const modelsAreConfigured = [...modelIds].every((id) => connected.has(id.split("/")[0]));
+    record(
+      "GET /api/config model catalog",
+      typeof cfg.defaultModel === "string" && defaultIsListed && modelsAreConfigured,
+      `defaultModel=${cfg.defaultModel || "none"}, models=${modelIds.size}, providers=${connected.size}`,
+    );
 
     const sandbox = await fetch(`${BASE}/api/sandbox`, {
       method: "POST",
@@ -161,18 +151,6 @@ async function main() {
       `languages=${metaBody.languages?.length}, timeoutMs=${metaBody.limits?.timeoutMs}`,
     );
 
-    const chatTool = await fetch(`${BASE}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: [{ id: "2", role: "user", parts: [{ type: "text", text: "what is the weather in Paris?" }] }] }),
-    });
-    const chatToolText = await chatTool.text();
-    record(
-      "POST /api/chat tool loop (mock)",
-      chatTool.ok && chatToolText.includes('"type":"tool-input-available","toolCallId":"mock-weather-1","toolName":"weather"') && chatToolText.includes('"type":"tool-output-available","toolCallId":"mock-weather-1"') && chatToolText.includes('"type":"text-delta"'),
-      `tool call: ${chatToolText.includes('"toolName":"weather"')}, executed: ${chatToolText.includes("tool-output-available")}, follow-up text: ${chatToolText.includes('"type":"text-delta"')}`,
-    );
-
     const chatBad = await fetch(`${BASE}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -183,92 +161,6 @@ async function main() {
       "POST /api/chat invalid body (400)",
       chatBad.status === 400 && chatBadBody?.error?.message?.length > 0,
       `status=${chatBad.status}, message=${chatBadBody?.error?.message}`,
-    );
-
-    const structured = await fetch(`${BASE}/api/structured`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "pasta", kind: "object" }),
-    });
-    const structuredBody = await structured.json();
-    record("POST /api/structured (mock)", structured.ok && "output" in structuredBody, `finishReason=${structuredBody.finishReason}`);
-
-    const structuredArray = await fetch(`${BASE}/api/structured`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "pasta steps", kind: "array" }),
-    });
-    const structuredArrayBody = await structuredArray.json();
-    record(
-      "POST /api/structured array (mock)",
-      structuredArray.ok && Array.isArray(structuredArrayBody.output) && structuredArrayBody.output.length > 0,
-      `output=${JSON.stringify(structuredArrayBody.output)}`,
-    );
-
-    const agent = await fetch(`${BASE}/api/agent`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "weather in SF" }),
-    });
-    const agentText = await agent.text();
-    record(
-      "POST /api/agent stream (mock)",
-      agent.ok && agentText.includes('"type":"text-delta"') && agentText.includes('"toolName":"weather"') && agentText.includes('"tool-output-available"'),
-      `streamed text: ${agentText.includes('"type":"text-delta"')}, tool call: ${agentText.includes('"toolName":"weather"')}, tool executed: ${agentText.includes('"tool-output-available"')}`,
-    );
-
-    const agentStructured = await fetch(`${BASE}/api/agent`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "Summarize the weather in SF", mode: "structured" }),
-    });
-    const agentStructuredBody = await agentStructured.json();
-    record("POST /api/agent structured (mock)", agentStructured.ok && "output" in agentStructuredBody, `output=${JSON.stringify(agentStructuredBody.output)}`);
-
-    const workflow = await fetch(`${BASE}/api/workflow`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "Plan a small trip: check the weather, convert 75F to Celsius." }),
-    });
-    const workflowText = await workflow.text();
-    record(
-      "POST /api/workflow orchestrator->workers->synthesizer (mock)",
-      workflow.ok &&
-        workflowText.includes('"type":"data-plan"') &&
-        (workflowText.match(/"type":"data-task"/g) ?? []).length >= 2 &&
-        workflowText.includes('"type":"text-delta"') &&
-        workflowText.includes('"type":"data-summary"'),
-      `plan: ${workflowText.includes('"type":"data-plan"')}, tasks: ${(workflowText.match(/"type":"data-task"/g) ?? []).length}, synth: ${workflowText.includes('"type":"text-delta"')}`,
-    );
-
-    // Telemetry the panels render: per-worker arrival/ms/steps and the stage split.
-    const taskParts = [...workflowText.matchAll(/^data: (\{"type":"data-task".*)$/gm)].map((m) => {
-      try {
-        return JSON.parse(m[1]);
-      } catch {
-        return null;
-      }
-    });
-    const summaryPart = [...workflowText.matchAll(/^data: (\{"type":"data-summary".*)$/gm)]
-      .map((m) => {
-        try {
-          return JSON.parse(m[1]).data;
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean)
-      .pop();
-    const metas = taskParts.filter(Boolean).map((p) => p.data.meta);
-    record(
-      "POST /api/workflow worker telemetry",
-      metas.length >= 2 &&
-        metas.every((m) => typeof m.ms === "number" && typeof m.steps === "number" && Array.isArray(m.tools)) &&
-        new Set(metas.map((m) => m.arrival)).size === metas.length &&
-        summaryPart?.breakdown?.planMs >= 0 &&
-        summaryPart?.breakdown?.synthMs >= 0 &&
-        typeof summaryPart?.tokens === "number",
-      `metas=${metas.length}, arrivals=${JSON.stringify(metas.map((m) => m.arrival))}, breakdown=${JSON.stringify(summaryPart?.breakdown)}`,
     );
 
     const workflowBad = await fetch(`${BASE}/api/workflow`, {
@@ -282,22 +174,6 @@ async function main() {
       workflowBad.status === 400 && workflowBadBody?.error?.message?.length > 0,
       `status=${workflowBad.status}, message=${workflowBadBody?.error?.message}`,
     );
-
-    const emb = await fetch(`${BASE}/api/embeddings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input: "hello world" }),
-    });
-    const embBody = await emb.json();
-    record("POST /api/embeddings (mock)", emb.ok && embBody.dimensions === 16, `dimensions=${embBody.dimensions}`);
-
-    const sim = await fetch(`${BASE}/api/embeddings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ compare: ["hello", "hello"] }),
-    });
-    const simBody = await sim.json();
-    record("POST /api/embeddings compare (mock)", sim.ok && simBody.similarity > 0.99, `similarity=${simBody.similarity}`);
 
     // --- agent memory ---
     const memPost = await fetch(`${BASE}/api/memory`, {
@@ -372,20 +248,13 @@ async function main() {
     const compBody = await compGet.json();
     record("GET /api/compaction: empty thread has no summary", compGet.ok && compBody.compaction === null, `compaction=${JSON.stringify(compBody.compaction)}`);
 
-    const compPost = await fetch(`${BASE}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId: "smoke-compaction", model: "openai/gpt-6-astra", messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] }] }),
-    });
-    record("POST /api/chat with conversationId (compaction path)", compPost.ok, `status=${compPost.status}`);
-
     const compMissing = await fetch(`${BASE}/api/compaction`);
     record("GET /api/compaction missing param (400)", compMissing.status === 400, `status=${compMissing.status}`);
 
     // ---- Security & governance (locked-down server) ----
     const lockPort = 3112;
     const locked = spawn("npx", ["next", "start", "-p", String(lockPort)], {
-      env: { ...process.env, AI_MOCK: "1", QUILLON_REQUIRE_AUTH: "1" },
+      env: { ...process.env, QUILLON_REQUIRE_AUTH: "1" },
       stdio: ["ignore", "ignore", "ignore"],
       detached: true,
     });
@@ -566,7 +435,7 @@ async function main() {
     stopServer();
   }
 
-  writeFileSync("tests/smoke-results.json", JSON.stringify({ date: new Date().toISOString(), mode: "mock (AI_MOCK=1)", results }, null, 2));
+  writeFileSync("tests/smoke-results.json", JSON.stringify({ date: new Date().toISOString(), mode: "provider-backed", results }, null, 2));
   console.log(`\n${results.length - failures}/${results.length} passed; metrics written to tests/smoke-results.json`);
   process.exit(failures ? 1 : 0);
 }
