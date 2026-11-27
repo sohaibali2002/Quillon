@@ -218,7 +218,7 @@ function ProviderNotice({
         <span className="chat-provider-mark" aria-hidden="true">!</span>
         <div>
           <strong>No chat models are available yet</strong>
-          <p>Add a Cerebras, Groq, or OpenRouter key to your project environment, then refresh to load its live model catalog.</p>
+          <p>No provider keys are available in this environment. If your existing keys are Production-only, enable them for Preview or Development in Vercel Settings → Vars, then retry.</p>
         </div>
         <button type="button" onClick={onRetry}>Retry</button>
       </div>
@@ -261,6 +261,8 @@ export default function Ask() {
 
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const shouldFollowLatestRef = useRef(true);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const transport = useMemo(() => new DefaultChatTransport({ api: "/api/chat" }), []);
   const {
     messages,
@@ -277,6 +279,21 @@ export default function Ask() {
   const canSend = !busy && Boolean(model) && (input.trim().length > 0 || files.length > 0);
   const turns = useMemo(() => groupTurns(messages), [messages]);
   const empty = turns.length === 0;
+  const latestTurn = turns[turns.length - 1];
+  const latestParts = latestTurn?.answer?.parts ?? [];
+  const latestHasText = latestParts.some((part) => part.type === "text" && part.text.length > 0);
+  const latestUsesTools = latestParts.some((part) => isToolUIPart<ChatTools>(part));
+  const liveStatus = busy
+    ? status === "submitted"
+      ? "Quillon is preparing your response."
+      : latestUsesTools && !latestHasText
+        ? "Quillon is using tools."
+        : latestHasText
+          ? "Quillon is responding."
+          : "Quillon is thinking."
+    : latestTurn?.answer
+      ? "Response complete."
+      : "";
 
   useEffect(() => {
     const onNewConversation = () => {
@@ -287,6 +304,8 @@ export default function Ask() {
       setFiles([]);
       setActiveSkills([]);
       setConversationId(createConversationId());
+      shouldFollowLatestRef.current = true;
+      setShowJumpToLatest(false);
       inputRef.current?.focus({ preventScroll: true });
     };
     window.addEventListener("quillon:new-thread", onNewConversation);
@@ -294,11 +313,34 @@ export default function Ask() {
   }, [busy, clearError, setMessages, stop]);
 
   useEffect(() => {
-    if (messages.length > 0) endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, [messages.length, status]);
+    const updateScrollFollow = () => {
+      const distanceFromLatest = document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
+      const atLatest = distanceFromLatest <= 140;
+      shouldFollowLatestRef.current = atLatest;
+      setShowJumpToLatest(busy && !atLatest);
+    };
+
+    updateScrollFollow();
+    window.addEventListener("scroll", updateScrollFollow, { passive: true });
+    window.addEventListener("resize", updateScrollFollow);
+    return () => {
+      window.removeEventListener("scroll", updateScrollFollow);
+      window.removeEventListener("resize", updateScrollFollow);
+    };
+  }, [busy]);
+
+  useEffect(() => {
+    if (messages.length === 0 || !shouldFollowLatestRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      endRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages, status]);
 
   function submit() {
     if (!canSend) return;
+    shouldFollowLatestRef.current = true;
+    setShowJumpToLatest(false);
     sendMessage(
       { text: input.trim(), files },
       { body: { model, conversationId, skills: activeSkills } },
@@ -500,8 +542,11 @@ export default function Ask() {
             const tools = parts.filter((part) => isToolUIPart<ChatTools>(part));
             const sources = parts.filter((part) => part.type === "source-url");
             const metadata = answer?.metadata;
-            const pending = last && (status === "submitted" || (status === "streaming" && !answer));
+            const pending = last && busy && !text && tools.length === 0;
             const streaming = last && status === "streaming";
+            const answerInProgress = last && busy;
+            const selectedModelId = metadata?.model ?? model;
+            const modelLabel = models.find((option) => option.id === selectedModelId)?.label ?? (selectedModelId || "Assistant");
             const attachments = turn.question.parts.filter((part) => part.type === "file");
 
             return (
@@ -526,14 +571,19 @@ export default function Ask() {
 
                 <div className="chat-answer-row">
                   <div className="chat-answer-mark" aria-hidden="true"><BrandMark /></div>
-                  <div className="chat-answer-content">
+                  <div className="chat-answer-content" aria-busy={answerInProgress}>
                     <div className="chat-answer-heading">
                       <strong>Quillon</strong>
-                      <span>{(metadata?.model ?? model) || "Assistant"}</span>
-                      {streaming && <span className="chat-stream-state"><i aria-hidden="true" /> Responding</span>}
+                      <span>{modelLabel}</span>
+                      {answerInProgress && (
+                        <span className="chat-stream-state" aria-hidden="true">
+                          <i />
+                          {status === "submitted" ? "Starting" : tools.length > 0 && !text ? "Using tools" : text ? "Responding" : "Thinking"}
+                        </span>
+                      )}
                     </div>
                     {pending && !text ? (
-                      <div className="chat-thinking" role="status" aria-label="Waiting for the model">
+                      <div className="chat-thinking" aria-hidden="true">
                         <span /><span /><span />
                       </div>
                     ) : (
@@ -619,7 +669,24 @@ export default function Ask() {
           )}
           <div ref={endRef} />
         </section>
+        <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{liveStatus}</div>
         <div className="chat-dock">
+          {showJumpToLatest && (
+            <button
+              type="button"
+              className="chat-jump-latest"
+              onClick={() => {
+                shouldFollowLatestRef.current = true;
+                setShowJumpToLatest(false);
+                endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+              }}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 5v14m-7-7 7 7 7-7" />
+              </svg>
+              Jump to latest
+            </button>
+          )}
           {modelErrors.length > 0 && models.length > 0 && (
             <p className="chat-provider-note" role="status">Some provider catalogs are unavailable: {modelErrors.join(" ")}</p>
           )}

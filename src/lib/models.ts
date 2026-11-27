@@ -401,7 +401,7 @@ export async function resolveModelAny(modelId?: string | null): Promise<Language
   const id = (modelId ?? "").trim() || DEFAULT_MODEL;
   if (!id) {
     throw new ModelConfigurationError(
-      "No usable chat model is available. Configure a Cerebras, Groq, or OpenRouter provider key.",
+      "No usable chat model is available. Configure an available key for a supported model provider.",
     );
   }
 
