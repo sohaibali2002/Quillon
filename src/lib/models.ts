@@ -1,16 +1,12 @@
-// Provider configuration layer.
-//
-// Model ids are AI Gateway strings like "openai/gpt-6-astra" and are routed
-// through the Vercel AI Gateway, authenticated with AI_GATEWAY_API_KEY.
-// Direct provider packages can be added later; the id decides the route.
+// Provider configuration layer. Provider-prefixed model ids use native SDK
+// clients when their server-side credentials are configured; all other ids are
+// passed through to the Vercel AI Gateway.
 //
 // Set AI_MOCK=1 to swap in scripted mock models (from `ai/test`) so the whole
 // pipeline can be smoke-tested without any provider key.
 
 import type { EmbeddingModel, LanguageModel } from "ai";
 
-export const DEFAULT_MODEL =
-  process.env.AI_DEFAULT_MODEL ?? "openai/gpt-6-astra";
 export const DEFAULT_EMBEDDING_MODEL =
   process.env.AI_EMBEDDING_MODEL ?? "openai/text-embedding-4";
 
@@ -369,8 +365,6 @@ async function getMockEmbeddingModel(): Promise<EmbeddingModel> {
 }
 
 export function isMockMode(): boolean {
-  // Explicit mock switch, or automatic fallback when no Gateway key exists so
-  // the app runs zero-config. Set AI_GATEWAY_API_KEY to go live.
   if (process.env.AI_MOCK === "1") return true;
   if (process.env.AI_GATEWAY_API_KEY) return false;
   return !Object.keys(providers).some((id) => providerAvailable(id));
@@ -379,9 +373,7 @@ export function isMockMode(): boolean {
 export async function resolveModel(
   modelId?: string | null,
 ): Promise<LanguageModel> {
-  const id = (modelId ?? "").trim() || DEFAULT_MODEL;
-  if (isMockMode()) return getMockLanguageModel();
-  return id as unknown as LanguageModel;
+  return resolveModelAny(modelId);
 }
 
 export async function resolveEmbeddingModel(
@@ -394,6 +386,9 @@ export async function resolveEmbeddingModel(
 
 export function listModels(): { id: ModelId; label: string }[] {
   return [
+    { id: "cerebras/gpt-oss-120b", label: "Cerebras · GPT-OSS 120B" },
+    { id: "groq/llama-3.3-70b-versatile", label: "Groq · Llama 3.3 70B" },
+    { id: "openrouter/openrouter/free", label: "OpenRouter · Free model router" },
     { id: "openai/gpt-6-astra", label: "GPT 6 Astra" },
     { id: "anthropic/claude-sonnet-5.5", label: "Claude Sonnet 5.5" },
     { id: "google/gemini-3-pro", label: "Gemini 3 Pro" },
@@ -407,16 +402,15 @@ export function listModels(): { id: ModelId; label: string }[] {
 // ---------------------------------------------------------------------------
 // Native provider support.
 //
-// Each flagship API gets its own official AI SDK provider package, keyed by
-// its env var. `<provider>/<model>` routes to that provider natively; ids
-// without a known provider prefix stay on the AI Gateway. OpenRouter and any
-// other OpenAI-compatible API work through openai-compatible with a custom
-// base URL (OPENROUTER_BASE_URL style env vars).
+// Provider-native packages are used where available; OpenAI-compatible APIs
+// use the generic client. `<provider>/<model>` routes natively when its
+// server-side credential is present, while unmatched ids go through AI Gateway.
 // ---------------------------------------------------------------------------
 
 type ProviderSpec = {
   label: string;
   envVar: string;
+  freeTier?: boolean;
   /** Alternative env vars that also enable the provider. */
   altEnvVars?: string[];
   create: (modelId: string) => Promise<LanguageModel>;
@@ -471,9 +465,24 @@ const providers: Record<string, ProviderSpec> = {
       return mistral(m || "mistral-large-latest") as unknown as LanguageModel;
     },
   },
+  cerebras: {
+    label: "Cerebras",
+    envVar: "CEREBRAS_API_KEY",
+    freeTier: true,
+    create: async (m) => {
+      const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
+      const cerebras = createOpenAICompatible({
+        name: "cerebras",
+        baseURL: "https://api.cerebras.ai/v1",
+        apiKey: process.env.CEREBRAS_API_KEY ?? "",
+      });
+      return cerebras(m || "gpt-oss-120b") as unknown as LanguageModel;
+    },
+  },
   groq: {
     label: "Groq",
     envVar: "GROQ_API_KEY",
+    freeTier: true,
     create: async (m) => {
       const { createGroq } = await import("@ai-sdk/groq");
       const groq = createGroq({ apiKey: process.env.GROQ_API_KEY });
@@ -521,6 +530,7 @@ const providers: Record<string, ProviderSpec> = {
   openrouter: {
     label: "OpenRouter",
     envVar: "OPENROUTER_API_KEY",
+    freeTier: true,
     create: async (m) => {
       const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
       const openrouter = createOpenAICompatible({
@@ -564,6 +574,7 @@ export type ProviderStatus = {
   label: string;
   envVar: string;
   available: boolean;
+  freeTier: boolean;
 };
 
 export function listProviders(): ProviderStatus[] {
@@ -571,6 +582,7 @@ export function listProviders(): ProviderStatus[] {
     id,
     label: spec.label,
     envVar: spec.envVar,
+    freeTier: Boolean(spec.freeTier),
     available:
       Boolean(process.env[spec.envVar]) ||
       (spec.altEnvVars ?? []).some((v) => Boolean(process.env[v])),
@@ -586,6 +598,16 @@ function providerAvailable(id: string): boolean {
   );
 }
 
+export const DEFAULT_MODEL =
+  process.env.AI_DEFAULT_MODEL ??
+  (providerAvailable("cerebras")
+    ? "cerebras/gpt-oss-120b"
+    : providerAvailable("groq")
+      ? "groq/llama-3.3-70b-versatile"
+      : providerAvailable("openrouter")
+        ? "openrouter/openrouter/free"
+        : "groq/llama-3.3-70b-versatile");
+
 export const DEFAULT_NATIVE_MODEL =
   process.env.AI_DEFAULT_NATIVE_MODEL ?? "openai/gpt-4o";
 
@@ -594,7 +616,7 @@ export const DEFAULT_NATIVE_MODEL =
  *  1. mock mode -> scripted mock model
  *  2. "<provider>/<model>" with a configured provider -> that native SDK
  *     (openrouter/<anything> goes through the OpenRouter OpenAI-compatible API)
- *  3. anything else -> AI Gateway id (e.g. "openai/gpt-6-astra")
+ *  3. anything else -> AI Gateway id (e.g. "openai/gpt-4o")
  */
 export async function resolveModelAny(modelId?: string | null): Promise<LanguageModel> {
   const id = (modelId ?? "").trim() || DEFAULT_MODEL;

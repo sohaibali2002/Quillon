@@ -7,6 +7,7 @@ type ProviderStatus = {
   label: string;
   envVar: string;
   available: boolean;
+  freeTier?: boolean;
 };
 
 type Config = {
@@ -22,25 +23,27 @@ export default function ModeBadge() {
     fetch("/api/config")
       .then((r) => r.json())
       .then((c: Config) => {
-        setMock(!c.gateway.set);
-        setProviders(c.providers ?? []);
+        const configuredProviders = c.providers ?? [];
+        setProviders(configuredProviders);
+        setMock(!c.gateway.set && !configuredProviders.some((provider) => provider.available));
       })
       .catch(() => setMock(true));
   }, []);
 
   if (mock === null) return null;
 
-  const live = providers.filter((p) => p.available);
+  const live = providers.filter((provider) => provider.available);
+  const free = live.filter((provider) => provider.freeTier);
   const detail =
     live.length > 0
-      ? `native: ${live.map((p) => p.label).join(", ")}`
-      : "no native provider keys set";
+      ? `Connected: ${live.map((provider) => provider.label).join(", ")}${free.length ? ` · free-tier routes: ${free.map((provider) => provider.label).join(", ")}` : ""}`
+      : "No provider credentials detected in this environment";
 
   return (
     <span
       className={`badge ${mock ? "badge-mock" : "badge-live"}`}
       role="status"
-      title={mock ? `${detail} — set AI_GATEWAY_API_KEY or a provider key to go live` : detail}
+      title={detail}
     >
       <span className="chip-dot" style={{ background: "currentColor" }} aria-hidden="true" />
       {mock ? "Mock mode" : "Live"}

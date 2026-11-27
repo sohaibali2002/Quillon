@@ -45,6 +45,12 @@ const panels = [
   { id: "account", label: "Account", hint: "Sign-in and session", key: "0", icon: icon("M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0"), render: () => <AccountPanel /> },
 ] as const;
 
+const navGroups = [
+  { id: "work", label: "Build", panelIds: ["agents", "workflows", "sandbox", "structured", "studio"] },
+  { id: "knowledge", label: "Knowledge", panelIds: ["memory", "skills", "mcp", "embeddings"] },
+  { id: "manage", label: "Manage", panelIds: ["connectors", "brand", "jobs", "govern", "setup", "account"] },
+] as const;
+
 function Shell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const params = useSearchParams();
@@ -53,6 +59,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   const [navOpen, setNavOpen] = useState(false);
   const [isDesktop, setIsDesktop] = useState(true);
   const [railShown, setRailShown] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set<string>(["work"]));
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 781px)");
@@ -83,6 +90,10 @@ function Shell({ children }: { children: React.ReactNode }) {
       else next.delete("panel");
       const qs = next.toString();
       router.replace(qs ? `/workspace?${qs}` : "/workspace", { scroll: false });
+      if (id) {
+        const group = navGroups.find((entry) => entry.panelIds.some((panelId) => panelId === id));
+        if (group) setExpandedGroups((current) => new Set(current).add(group.id));
+      }
       setNavOpen(false);
     },
     [params, router],
@@ -117,8 +128,8 @@ function Shell({ children }: { children: React.ReactNode }) {
         Skip to answer
       </a>
 
-      {isDesktop && (
-        <aside className="lx-rail" data-open={isDesktop && railShown} aria-label="Quillon">
+      {(isDesktop || navOpen) && (
+        <aside className="lx-rail" data-open={isDesktop || railShown} aria-label="Quillon">
           <Link href="/" className="lx-home" aria-label="Quillon home">
             <BrandMark />
             <span className="lx-wordmark">Quillon</span>
@@ -134,24 +145,51 @@ function Shell({ children }: { children: React.ReactNode }) {
             {icon("M12 5v14M5 12h14")}
             <span>New thread</span>
           </button>
-          <nav aria-label="Tools">
-            <ul className="lx-tools">
-              {panels.map((p) => (
-                <li key={p.id}>
+          <nav className="lx-nav" aria-label="Workspace tools">
+            {navGroups.map((group) => {
+              const expanded = expandedGroups.has(group.id);
+              return (
+                <section className="lx-nav-group" key={group.id}>
                   <button
                     type="button"
-                    className="lx-tool"
-                    aria-pressed={active?.id === p.id}
-                    aria-controls="lx-drawer"
-                    title={`${p.label} · Alt+${p.key}`}
-                    onClick={() => open(active?.id === p.id ? null : p.id)}
+                    className="lx-nav-group-toggle"
+                    aria-expanded={expanded}
+                    aria-controls={`lx-group-${group.id}`}
+                    onClick={() => setExpandedGroups((current) => {
+                      const next = new Set(current);
+                      if (next.has(group.id)) next.delete(group.id);
+                      else next.add(group.id);
+                      return next;
+                    })}
                   >
-                    {p.icon}
-                    <span>{p.label}</span>
+                    <span>{group.label}</span>
+                    <span className="lx-nav-count" aria-hidden="true">{group.panelIds.length}</span>
+                    <span className="lx-nav-chevron" aria-hidden="true">{icon("M6 9l6 6 6-6")}</span>
                   </button>
-                </li>
-              ))}
-            </ul>
+                  <ul className="lx-tools" id={`lx-group-${group.id}`} hidden={!expanded}>
+                    {group.panelIds.map((id) => {
+                      const panel = panels.find((item) => item.id === id);
+                      if (!panel) return null;
+                      return (
+                        <li key={panel.id}>
+                          <button
+                            type="button"
+                            className="lx-tool"
+                            aria-pressed={active?.id === panel.id}
+                            aria-controls="lx-drawer"
+                            title={`${panel.label} · Alt+${panel.key}`}
+                            onClick={() => open(active?.id === panel.id ? null : panel.id)}
+                          >
+                            {panel.icon}
+                            <span>{panel.label}</span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              );
+            })}
           </nav>
           <div className="lx-rail-foot">
             <ModeBadge />

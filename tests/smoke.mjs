@@ -60,7 +60,9 @@ async function main() {
     const up = await fetch(`${BASE}/api/config`);
     if (!up.ok) throw new Error(`server not up: ${up.status}`);
     const cfg = await up.json();
-    record("GET /api/config", cfg.defaultModel === "openai/gpt-6-astra" && cfg.models.length === 7, `defaultModel=${cfg.defaultModel}, models=${cfg.models.length}`);
+    const modelIds = new Set((cfg.models ?? []).map((model) => model.id));
+    const freeRoutes = ["cerebras/gpt-oss-120b", "groq/llama-3.3-70b-versatile", "openrouter/openrouter/free"];
+    record("GET /api/config", typeof cfg.defaultModel === "string" && freeRoutes.every((id) => modelIds.has(id)), `defaultModel=${cfg.defaultModel}, models=${cfg.models.length}`);
 
     const gen = await fetch(`${BASE}/api/generate`, {
       method: "POST",
