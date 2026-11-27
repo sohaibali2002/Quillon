@@ -2,9 +2,8 @@
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { BrandMark } from "@/app/components/brand";
-import ModeBadge from "@/app/components/mode-badge";
 import AgentPanel from "@/app/components/agent-panel";
 import WorkflowPanel from "@/app/components/workflow-panel";
 import MemoryPanel from "@/app/components/memory-panel";
@@ -53,6 +52,7 @@ const navGroups = [
 
 function Shell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const params = useSearchParams();
   const active = panels.find((p) => p.id === params.get("panel")) ?? null;
   const drawerRef = useRef<HTMLElement | null>(null);
@@ -132,7 +132,10 @@ function Shell({ children }: { children: React.ReactNode }) {
         <aside className="lx-rail" data-open={isDesktop || railShown} aria-label="Quillon">
           <Link href="/" className="lx-home" aria-label="Quillon home">
             <BrandMark />
-            <span className="lx-wordmark">Quillon</span>
+            <span className="lx-brand-copy">
+              <span className="lx-wordmark">Quillon</span>
+              <span className="lx-product-tag">AI WORKSPACE</span>
+            </span>
           </Link>
           <button
             type="button"
@@ -145,6 +148,16 @@ function Shell({ children }: { children: React.ReactNode }) {
             {icon("M12 5v14M5 12h14")}
             <span>New thread</span>
           </button>
+          <Link
+            href="/workspace"
+            className="lx-assistant-link"
+            aria-current={pathname === "/workspace" ? "page" : undefined}
+          >
+            {icon("M4 5.5h16v11H9l-5 3zM8 9h8M8 12.5h5")}
+            <span>Assistant</span>
+            <span className="lx-assistant-caption">CHAT</span>
+          </Link>
+          <div className="lx-capabilities-label">Capabilities</div>
           <nav className="lx-nav" aria-label="Workspace tools">
             {navGroups.map((group) => {
               const expanded = expandedGroups.has(group.id);
@@ -192,7 +205,6 @@ function Shell({ children }: { children: React.ReactNode }) {
             })}
           </nav>
           <div className="lx-rail-foot">
-            <ModeBadge />
             <a href="https://ai-sdk.dev" target="_blank" rel="noreferrer">
               AI SDK docs
             </a>

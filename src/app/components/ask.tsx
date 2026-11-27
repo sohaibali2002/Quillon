@@ -7,6 +7,7 @@ import type { ChatMessage, ChatTools } from "@/lib/ai-types";
 import { MarkdownLite } from "./markdown-lite";
 import { ToolPartView } from "./tool-cards";
 import CopyButton from "./copy-button";
+import ModeBadge from "./mode-badge";
 
 type ModelOption = { id: string; label: string };
 type SkillOption = { id: string; name: string; description: string };
@@ -27,10 +28,30 @@ function toFileUIPart(file: File): Promise<FileUIPart> {
 }
 
 const starters = [
-  "What is the weather in Lisbon?",
-  "Convert 21 degrees Celsius to Fahrenheit.",
-  "What time is it in Tokyo right now?",
-  "Run a Python snippet that sums the numbers 1 to 10.",
+  {
+    title: "Brief a long document",
+    detail: "Surface decisions, risks, and open questions.",
+    prompt: "I’m going to attach a report. Summarize it in five executive bullets, then identify the key risks and open questions.",
+    icon: "M6 3.75h8l4 4V20.25H6zM14 3.75v4h4M9 12h6M9 15.5h6",
+  },
+  {
+    title: "Analyze a dataset",
+    detail: "Find patterns in a CSV or spreadsheet.",
+    prompt: "I’m going to attach a dataset. Inspect its structure, identify the most important patterns, and explain any caveats.",
+    icon: "M4 19.5h16M6.5 16v-4M11.5 16V7M16.5 16v-6",
+  },
+  {
+    title: "Run a calculation",
+    detail: "Work through the numbers with Python.",
+    prompt: "Use Python to calculate the compound annual growth rate for an investment that grows from $25,000 to $41,000 over 6 years, and show the formula.",
+    icon: "M8 4.5h8M8 9h8M8 13.5h3M15.5 13l3 3m0-3-3 3M6 2.75h12a2 2 0 0 1 2 2v14.5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4.75a2 2 0 0 1 2-2z",
+  },
+  {
+    title: "Draft a briefing",
+    detail: "Turn a rough idea into a clear first draft.",
+    prompt: "Draft a concise executive briefing on the trade-offs of running AI models locally versus through a hosted provider. Organize it into recommendation, rationale, and risks.",
+    icon: "M5 4.5h14v15H5zM8 8h8M8 11.5h8M8 15h5",
+  },
 ];
 
 const toolNames: Record<string, string> = {
@@ -71,6 +92,34 @@ function questionText(m: ChatMessage) {
     .map((p) => (p.type === "text" ? p.text : ""))
     .join(" ")
     .trim();
+}
+
+function ChatHeader({ hasConversation }: { hasConversation: boolean }) {
+  return (
+    <header className="lg-topbar">
+      <p className="lg-page-path">
+        <span>Workspace</span>
+        <span className="lg-path-divider" aria-hidden="true">/</span>
+        <strong>Assistant</strong>
+      </p>
+      <div className="lg-topbar-actions">
+        <ModeBadge />
+        {hasConversation && (
+          <button
+            type="button"
+            className="lg-new-session"
+            aria-label="New conversation"
+            onClick={() => window.dispatchEvent(new Event("quillon:new-thread"))}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            <span>New conversation</span>
+          </button>
+        )}
+      </div>
+    </header>
+  );
 }
 
 export default function Ask() {
@@ -178,6 +227,7 @@ export default function Ask() {
         onChange={(e) => setInput(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
             e.preventDefault();
             submit();
           }
@@ -256,39 +306,63 @@ export default function Ask() {
 
   if (empty) {
     return (
-      <div className="lg-home">
-        <p className="lg-eyebrow">Quillon — ask, then watch it work</p>
-        <h1 className="lg-title">Every answer shows its work</h1>
-        <p className="lg-lede">
-          Ask once and get a clean, cited answer with the tools, tokens and sources that produced
-          it. Memory, skills, agents and the sandbox stay one keystroke away without ever crowding
-          the page.
-        </p>
-        {composer}
-        <ul className="lg-starters" aria-label="Example questions">
-          {starters.map((s) => (
-            <li key={s}>
-              <button
-                type="button"
-                onClick={() => {
-                  setInput(s);
-                  inputRef.current?.focus({ preventScroll: true });
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-                  <path d="M5 12h14M13 6l6 6-6 6" />
-                </svg>
-                {s}
-              </button>
-            </li>
-          ))}
-        </ul>
+      <div className="lg-workspace">
+        <ChatHeader hasConversation={false} />
+        <section className="lg-home" aria-labelledby="lg-home-title">
+          <div className="lg-home-copy">
+            <p className="lg-eyebrow">
+              <span className="lg-eyebrow-dot" aria-hidden="true" />
+              New conversation <span className="lg-eyebrow-divider">/</span> Quillon assistant
+            </p>
+            <h1 id="lg-home-title" className="lg-title">What would you like to work through?</h1>
+            <p className="lg-lede">
+              Bring a document, explore an idea, or ask for help with a task. Keep your model,
+              tools, and context together in one focused workspace.
+            </p>
+          </div>
+          {composer}
+          <section className="lg-suggestion-section" aria-labelledby="lg-suggestion-title">
+            <div className="lg-suggestion-heading">
+              <h2 id="lg-suggestion-title">Start with a task</h2>
+              <p>Choose a prompt or write your own.</p>
+            </div>
+            <ul className="lg-starters" aria-label="Suggested tasks">
+              {starters.map((starter) => (
+                <li key={starter.title}>
+                  <button
+                    type="button"
+                    aria-label={`Start: ${starter.title}`}
+                    onClick={() => {
+                      setInput(starter.prompt);
+                      inputRef.current?.focus({ preventScroll: true });
+                    }}
+                  >
+                    <span className="lg-starter-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+                        <path d={starter.icon} />
+                      </svg>
+                    </span>
+                    <span className="lg-starter-copy">
+                      <strong>{starter.title}</strong>
+                      <span>{starter.detail}</span>
+                    </span>
+                    <svg className="lg-starter-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M5 12h14M13 6l6 6-6 6" />
+                    </svg>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </section>
       </div>
     );
   }
 
   return (
-    <div className="lg-thread">
+    <div className="lg-workspace">
+      <ChatHeader hasConversation />
+      <div className="lg-thread">
       {turns.map((t, index) => {
         const last = index === turns.length - 1;
         const answer = t.answer;
@@ -473,6 +547,7 @@ export default function Ask() {
 
       <div ref={endRef} />
       <div className="lg-dock">{composer}</div>
+      </div>
     </div>
   );
 }
