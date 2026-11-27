@@ -5,23 +5,23 @@ async function secure(req: Request) {
 }
 
 // Model + provider configuration endpoint (read-only).
-import { DEFAULT_MODEL, listModels, listProviders } from "@/lib/models";
+import { getDefaultModel, getModelCatalog, listProviders } from "@/lib/models";
 
 import { guard, authEnforced } from "@/lib/guard";
 export async function GET(req: Request) {
-  // Read-only model catalog, but in locked-down mode it still needs a session.
   if (authEnforced()) {
     const gate = await guard(req);
     if (gate instanceof Response) return gate;
   }
-  return Response.json({
-    defaultModel: DEFAULT_MODEL,
-    models: listModels(),
-    gateway: {
-      requiredEnvVar: "AI_GATEWAY_API_KEY",
-      set: Boolean(process.env.AI_GATEWAY_API_KEY),
+
+  const catalog = await getModelCatalog();
+  return Response.json(
+    {
+      defaultModel: getDefaultModel(catalog.models),
+      models: catalog.models,
+      modelErrors: catalog.errors,
+      providers: listProviders(),
     },
-    // Native provider integrations: available = env key present.
-    providers: listProviders(),
-  });
+    { headers: { "Cache-Control": "private, no-store, max-age=0" } },
+  );
 }

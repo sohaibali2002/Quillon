@@ -372,8 +372,8 @@ export default function Home() {
             <span className="eyebrow">Ready when you are</span>
             <h2>Open a desk and watch it stream.</h2>
             <p>
-              The workbench starts in mock mode, so every surface is live before you add a
-              single key. Point it at a provider whenever you want real tokens.
+              Connect a model provider to start a real conversation. Available models are
+              discovered from your configured provider keys—there are no scripted replies.
             </p>
             <Link className="btn" href="/workspace">
               Open the workbench <Arrow />
@@ -421,7 +421,7 @@ export default function Home() {
           </div>
           <div className="foot-base">
             <span>© 2026 Quillon</span>
-            <span>Apache-2.0 · self-hosted · mock mode by default</span>
+            <span>Apache-2.0 · self-hosted · provider-backed inference</span>
           </div>
         </div>
       </footer>

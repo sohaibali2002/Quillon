@@ -159,7 +159,7 @@ export default function WorkflowPanel() {
     sendMessage({ text: prompt }, { body: model ? { model } : {} });
   };
 
-  const modelName = summary?.model && summary.model !== "gateway default" ? summary.model : defaultModel;
+  const modelName = summary?.model || defaultModel;
   const slowestMs = tasks.reduce((max, t) => Math.max(max, t.meta.ms), 0);
   const kindCounts = plan
     ? plan.tasks.reduce<Record<string, number>>((acc, t) => {
@@ -236,7 +236,7 @@ export default function WorkflowPanel() {
           <label className="gp-field">
             <span className="gp-label">Model</span>
             <select className="gp-select" aria-label="Workflow model" value={model} onChange={(e) => setModel(e.target.value)}>
-              <option value="">default · {(defaultModel || "gateway").split("/").pop()}</option>
+              <option value="">default · {(defaultModel || "no model configured").split("/").pop()}</option>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.label}

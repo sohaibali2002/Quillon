@@ -9,6 +9,7 @@ type Computer = { id: string; name: string; provider: string; host: string; user
 type SetupCheck = { key: string; label: string; done: boolean; how: string };
 type Setup = {
   checks: SetupCheck[];
+  providers: { id: string; label: string; envVar: string; available: boolean; freeTier: boolean }[];
   steps: { title: string; body: string; href: string; done: boolean }[];
   quickstart: { ollama: string; env: string; docker: string };
 };
@@ -87,6 +88,29 @@ export default function SetupPanel() {
             </li>
           ))}
         </ol>
+      </section>
+
+      <section className="gp-card" aria-labelledby="sp-providers">
+        <div className="sp-provider-heading">
+          <div>
+            <h3 id="sp-providers">Free model routes</h3>
+            <p className="gp-fineprint">Status reflects this environment only. Credentials stay server-side; quotas and model availability vary by provider.</p>
+          </div>
+          <Pill tone={setup?.providers.some((provider) => provider.available) ? "ok" : "idle"}>
+            {setup?.providers.filter((provider) => provider.available).length ?? 0} ready here
+          </Pill>
+        </div>
+        <ul className="sp-provider-list">
+          {(setup?.providers ?? []).map((provider) => (
+            <li key={provider.id}>
+              <div className="sp-provider-name">
+                <b>{provider.label}</b>
+                <code>{provider.envVar}</code>
+              </div>
+              <Pill tone={provider.available ? "ok" : "idle"}>{provider.available ? "Ready" : "Not available here"}</Pill>
+            </li>
+          ))}
+        </ul>
       </section>
 
       <section className="gp-card" aria-labelledby="sp-checks">

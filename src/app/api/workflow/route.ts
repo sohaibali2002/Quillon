@@ -11,6 +11,7 @@ async function secure(req: Request) {
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { z } from "zod";
 import { guard } from "@/lib/guard";
+import { DEFAULT_MODEL } from "@/lib/models";
 import {
   runOrchestrator,
   runSynthesizer,
@@ -86,6 +87,7 @@ export async function POST(req: Request) {
     );
   }
   const { model } = parsed.data;
+  const modelLabel = model || DEFAULT_MODEL || "unconfigured";
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
@@ -107,7 +109,7 @@ export async function POST(req: Request) {
           data: {
             ...plan,
             ms: planMs,
-            model: model ?? "gateway default",
+            model: modelLabel,
           } satisfies PlanPart,
         });
 
@@ -159,7 +161,7 @@ export async function POST(req: Request) {
               [...workerMeta.values()].reduce((sum, m) => sum + m.tokens, 0),
             slowest,
             fastest,
-            model: model ?? "gateway default",
+            model: modelLabel,
           } satisfies SummaryPart,
         });
       } catch (error) {
@@ -172,7 +174,7 @@ export async function POST(req: Request) {
             tokens: planTokens + synthTokens,
             slowest: null,
             fastest: null,
-            model: model ?? "gateway default",
+            model: modelLabel,
             error:
               error instanceof Error ? error.message : "Workflow failed.",
           } satisfies SummaryPart,

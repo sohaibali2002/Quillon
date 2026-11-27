@@ -4,10 +4,10 @@ async function secure(req: Request) {
   return gate;
 }
 
-// Embeddings + similarity. AI Gateway embedding model id by default.
+// Embeddings + similarity use a configured OpenAI embedding model.
 //   { input: string | string[], model?, compare?: [string, string] }
 import { embed, embedMany, cosineSimilarity } from "ai";
-import { resolveEmbeddingModel } from "@/lib/models";
+import { ModelConfigurationError, resolveEmbeddingModel } from "@/lib/models";
 
 import { guard } from "@/lib/guard";
 export const maxDuration = 30;
@@ -26,7 +26,15 @@ export async function POST(req: Request) {
     model?: string;
   } = await req.json();
 
-  const embeddingModel = await resolveEmbeddingModel(model);
+  let embeddingModel: Awaited<ReturnType<typeof resolveEmbeddingModel>>;
+  try {
+    embeddingModel = await resolveEmbeddingModel(model);
+  } catch (error) {
+    if (error instanceof ModelConfigurationError) {
+      return Response.json({ error: { message: error.message } }, { status: error.statusCode });
+    }
+    throw error;
+  }
 
   if (compare) {
     const [a, b] = compare;

@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
 import "./panels.css";
@@ -26,15 +26,19 @@ const mono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "Quillon — the enterprise AI platform",
+  title: "Quillon — enterprise AI workspace",
   description:
-    "Quillon is a self-hosted, Apache-2.0 enterprise AI platform on the Vercel AI SDK: streaming chat with Office file generation, agent tool loops, multi-agent workflows, structured output, a multi-language sandbox, embeddings, memory, skills, MCP, seven enterprise connectors and Entra ID SSO.",
+    "A focused AI workspace for cited answers, tool-using agents, workflows, local models, memory, skills and enterprise integrations.",
   openGraph: {
-    title: "Quillon — the enterprise AI platform",
+    title: "Quillon — enterprise AI workspace",
     description:
-      "Every capability an enterprise deploy needs: chat with document generation, agents, workflows, sandbox, connectors and Entra ID SSO — self-hosted in one deploy.",
+      "A focused workspace for cited chat, agents, workflows, local models and enterprise integrations.",
     type: "website",
   },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0b1117",
 };
 
 export default function RootLayout({

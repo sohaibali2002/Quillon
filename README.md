@@ -73,12 +73,12 @@ npm install
 npm run dev        # http://localhost:3000
 ```
 
-It starts in **mock mode** — every surface is live before you add a key.
+Chat uses real provider APIs. The model picker discovers the models available to your configured provider keys; without a provider, sending a prompt returns a clear setup error instead of a generated placeholder.
 
-### One key (or none)
+### Connect a model provider
 
 ```bash
-AI_GATEWAY_API_KEY=...     # or OPENAI_API_KEY / ANTHROPIC_API_KEY / OPENROUTER_API_KEY
+CEREBRAS_API_KEY=...       # or GROQ_API_KEY / OPENROUTER_API_KEY
 ```
 
 ### Fully local, zero keys

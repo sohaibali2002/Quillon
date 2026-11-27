@@ -4,5 +4,5 @@ import { setupStatus } from "@/lib/setup";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json(setupStatus());
+  return NextResponse.json(await setupStatus());
 }

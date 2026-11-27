@@ -2,9 +2,8 @@
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { BrandMark } from "@/app/components/brand";
-import ModeBadge from "@/app/components/mode-badge";
 import AgentPanel from "@/app/components/agent-panel";
 import WorkflowPanel from "@/app/components/workflow-panel";
 import MemoryPanel from "@/app/components/memory-panel";
@@ -45,14 +44,25 @@ const panels = [
   { id: "account", label: "Account", hint: "Sign-in and session", key: "0", icon: icon("M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0"), render: () => <AccountPanel /> },
 ] as const;
 
+const navGroups = [
+  { id: "work", label: "Build", panelIds: ["agents", "workflows", "sandbox", "structured", "studio"] },
+  { id: "knowledge", label: "Knowledge", panelIds: ["memory", "skills", "mcp", "embeddings"] },
+  { id: "manage", label: "Manage", panelIds: ["connectors", "brand", "jobs", "govern", "setup", "account"] },
+] as const;
+
 function Shell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const params = useSearchParams();
   const active = panels.find((p) => p.id === params.get("panel")) ?? null;
+  const activeGroup = active
+    ? navGroups.find((group) => group.panelIds.some((panelId) => panelId === active.id))
+    : undefined;
   const drawerRef = useRef<HTMLElement | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [isDesktop, setIsDesktop] = useState(true);
   const [railShown, setRailShown] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set<string>(["work"]));
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 781px)");
@@ -83,6 +93,10 @@ function Shell({ children }: { children: React.ReactNode }) {
       else next.delete("panel");
       const qs = next.toString();
       router.replace(qs ? `/workspace?${qs}` : "/workspace", { scroll: false });
+      if (id) {
+        const group = navGroups.find((entry) => entry.panelIds.some((panelId) => panelId === id));
+        if (group) setExpandedGroups((current) => new Set(current).add(group.id));
+      }
       setNavOpen(false);
     },
     [params, router],
@@ -117,11 +131,14 @@ function Shell({ children }: { children: React.ReactNode }) {
         Skip to answer
       </a>
 
-      {isDesktop && (
-        <aside className="lx-rail" data-open={isDesktop && railShown} aria-label="Quillon">
+      {(isDesktop || navOpen) && (
+          <aside className="lx-rail" data-open={isDesktop || railShown} aria-label="Quillon workspace navigation">
           <Link href="/" className="lx-home" aria-label="Quillon home">
             <BrandMark />
-            <span className="lx-wordmark">Quillon</span>
+            <span className="lx-brand-copy">
+              <span className="lx-wordmark">Quillon</span>
+              <span className="lx-product-tag">AI WORKSPACE</span>
+            </span>
           </Link>
           <button
             type="button"
@@ -134,29 +151,74 @@ function Shell({ children }: { children: React.ReactNode }) {
             {icon("M12 5v14M5 12h14")}
             <span>New thread</span>
           </button>
-          <nav aria-label="Tools">
-            <ul className="lx-tools">
-              {panels.map((p) => (
-                <li key={p.id}>
+          <Link
+            href="/workspace"
+            className="lx-assistant-link"
+            aria-current={pathname === "/workspace" ? "page" : undefined}
+          >
+            {icon("M4 5.5h16v11H9l-5 3zM8 9h8M8 12.5h5")}
+            <span>Assistant</span>
+            <span className="lx-assistant-caption">CHAT</span>
+          </Link>
+          <div className="lx-capabilities-label">Capabilities</div>
+          <nav className="lx-nav" aria-label="Workspace tools">
+            {navGroups.map((group) => {
+              const expanded = expandedGroups.has(group.id);
+              return (
+                <section className="lx-nav-group" key={group.id}>
                   <button
                     type="button"
-                    className="lx-tool"
-                    aria-pressed={active?.id === p.id}
-                    aria-controls="lx-drawer"
-                    title={`${p.label} · Alt+${p.key}`}
-                    onClick={() => open(active?.id === p.id ? null : p.id)}
+                    className="lx-nav-group-toggle"
+                    aria-expanded={expanded}
+                    aria-controls={`lx-group-${group.id}`}
+                    onClick={() => setExpandedGroups((current) => {
+                      const next = new Set(current);
+                      if (next.has(group.id)) next.delete(group.id);
+                      else next.add(group.id);
+                      return next;
+                    })}
                   >
-                    {p.icon}
-                    <span>{p.label}</span>
+                    <span>{group.label}</span>
+                    <span className="lx-nav-count" aria-hidden="true">{group.panelIds.length}</span>
+                    <span className="lx-nav-chevron" aria-hidden="true">{icon("M6 9l6 6 6-6")}</span>
                   </button>
-                </li>
-              ))}
-            </ul>
+                  <ul className="lx-tools" id={`lx-group-${group.id}`} hidden={!expanded}>
+                    {group.panelIds.map((id) => {
+                      const panel = panels.find((item) => item.id === id);
+                      if (!panel) return null;
+                      return (
+                        <li key={panel.id}>
+                          <button
+                            type="button"
+                            className="lx-tool"
+                            aria-pressed={active?.id === panel.id}
+                            aria-controls="lx-drawer"
+                            title={`${panel.label} · Alt+${panel.key}`}
+                            onClick={() => open(active?.id === panel.id ? null : panel.id)}
+                          >
+                            {panel.icon}
+                            <span>{panel.label}</span>
+                            <kbd className="lx-tool-shortcut" aria-hidden="true">Alt {panel.key}</kbd>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              );
+            })}
           </nav>
           <div className="lx-rail-foot">
-            <ModeBadge />
+            <div className="lx-rail-help">
+              <span className="lx-rail-help-icon" aria-hidden="true">{icon("M12 18h.01M9.1 9a3 3 0 1 1 5.2 2c-1.3 1.2-2.3 1.7-2.3 3")}</span>
+              <span>
+                <strong>Quick navigation</strong>
+                <span><kbd>Alt</kbd> + a key opens a capability</span>
+              </span>
+            </div>
             <a href="https://ai-sdk.dev" target="_blank" rel="noreferrer">
-              AI SDK docs
+              <span>AI SDK documentation</span>
+              {icon("M7 17 17 7M7 7h10v10")}
             </a>
           </div>
         </aside>
@@ -212,15 +274,20 @@ function Shell({ children }: { children: React.ReactNode }) {
         role="dialog"
         aria-modal="false"
         aria-label={active ? active.label : "Tools"}
+        aria-labelledby={active ? "lx-drawer-title" : undefined}
         aria-hidden={mounted ? !active : true}
         tabIndex={-1}
       >
         {active && (
           <>
             <header className="lx-drawer-head">
-              <div>
-                <h2>{active.label}</h2>
-                <p>{active.hint}</p>
+              <div className="lx-drawer-heading">
+                <span className="lx-drawer-icon" aria-hidden="true">{active.icon}</span>
+                <div className="lx-drawer-copy">
+                  <p className="lx-drawer-kicker">{activeGroup?.label ?? "Workspace"}<span aria-hidden="true">/</span> Alt + {active.key}</p>
+                  <h2 id="lx-drawer-title">{active.label}</h2>
+                  <p>{active.hint}</p>
+                </div>
               </div>
               <button type="button" className="lx-close" onClick={() => open(null)} aria-label={`Close ${active.label}`}>
                 {icon("M6 6l12 12M18 6L6 18")}
