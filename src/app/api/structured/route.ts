@@ -45,15 +45,33 @@ export async function POST(req: Request) {
     return result.toTextStreamResponse();
   }
 
-  const result = await generateText({
-    model,
-    output,
-    prompt: String(prompt ?? "A simple pasta recipe"),
-  });
+  const promptText = String(prompt ?? "A simple pasta recipe");
+  try {
+    let result;
+    try {
+      result = await generateText({ model, output, prompt: promptText });
+    } catch (e) {
+      // Some providers validate the JSON against the schema server-side and
+      // reject a generation that misses a field; one stricter retry fixes it.
+      const msg = e instanceof Error ? e.message : "";
+      if (!/json_validate_failed|does not match the expected schema/.test(msg)) throw e;
+      result = await generateText({
+        model,
+        output,
+        prompt: `${promptText}\n\nReturn every property the schema requires.`,
+      });
+    }
 
-  return Response.json({
-    output: result.output,
-    usage: result.usage,
-    finishReason: result.finishReason,
-  });
+    return Response.json({
+      output: result.output,
+      usage: result.usage,
+      finishReason: result.finishReason,
+    });
+  } catch (e) {
+    console.error("structured error:", e);
+    return Response.json(
+      { error: { message: e instanceof Error ? e.message : "Structured generation failed." } },
+      { status: 502 },
+    );
+  }
 }

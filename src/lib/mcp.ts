@@ -4,7 +4,7 @@
 import { createMCPClient } from "@ai-sdk/mcp";
 import { StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
 import type { ToolSet } from "ai";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { getDb } from "@/lib/db";
 import { encryptToken, decryptToken, connectorsSecret } from "@/lib/connectors";
 
@@ -119,11 +119,13 @@ export function setMcpServerEnabled(id: string, enabled: boolean): boolean {
   const changes = getDb()
     .prepare("UPDATE mcp_servers SET enabled = ? WHERE id = ?")
     .run(enabled ? 1 : 0, id).changes;
+  if (Number(changes) > 0) invalidateMcpCache(id);
   return Number(changes) > 0;
 }
 
 export function deleteMcpServer(id: string): boolean {
   const changes = getDb().prepare("DELETE FROM mcp_servers WHERE id = ?").run(id).changes;
+  if (Number(changes) > 0) invalidateMcpCache(id);
   return Number(changes) > 0;
 }
 
@@ -218,46 +220,174 @@ function withTimeout<T>(p: Promise<T>, what: string): Promise<T> {
   });
 }
 
-// One client per call keeps the API surface stateless: connect, act, close.
-async function withClient<T>(server: McpServer, fn: (client: Awaited<ReturnType<typeof createMCPClient>>) => Promise<T>): Promise<T> {
-  const transport =
-    server.transport === "stdio"
-      ? new StdioMCPTransport({
-          command: server.command!,
-          args: server.args,
-          env: server.env,
-        })
-      : {
-          type: server.transport,
-          url: server.url!,
-          redirect: "follow" as const,
-        };
+// --- Connection pool ---------------------------------------------------------
+// Connecting, initializing and discovering tools on every message (and again
+// on every tool call) is the dominant MCP latency: one chat turn with three MCP
+// servers made six-plus connect/close round trips. Clients are pooled per
+// server and tool descriptors are cached for TOOL_CACHE_TTL_MS; the cache is
+// invalidated whenever a server is added, edited, enabled, disabled or deleted.
+// A dead pooled client is dropped and reconnected once on a connection error.
+const TOOL_CACHE_TTL_MS = 60_000;
+
+type McpClient = Awaited<ReturnType<typeof createMCPClient>>;
+
+function serverFingerprint(server: McpServer): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        server.transport,
+        server.url ?? null,
+        server.command ?? null,
+        server.args ?? [],
+        server.env ?? {},
+        server.enabled,
+      ]),
+    )
+    .digest("hex");
+}
+
+const clientPool = new Map<string, { fingerprint: string; client: McpClient }>();
+const toolCache = new Map<
+  string,
+  { fingerprint: string; at: number; tools: Record<string, { description?: string; inputSchema?: unknown }> }
+>();
+
+function transportFor(server: McpServer) {
+  return server.transport === "stdio"
+    ? new StdioMCPTransport({
+        command: server.command!,
+        args: server.args,
+        env: server.env,
+      })
+    : {
+        type: server.transport,
+        url: server.url!,
+        redirect: "follow" as const,
+      };
+}
+
+async function acquireClient(server: McpServer): Promise<McpClient> {
+  const fingerprint = serverFingerprint(server);
+  const pooled = clientPool.get(server.id);
+  if (pooled && pooled.fingerprint === fingerprint) return pooled.client;
+  if (pooled) dropClient(server.id);
   const client = await withTimeout(
-    createMCPClient({ transport, clientName: "quillon-workbench" }),
+    createMCPClient({ transport: transportFor(server), clientName: "quillon-workbench" }),
     `connect to "${server.name}"`,
   );
+  clientPool.set(server.id, { fingerprint, client });
+  return client;
+}
+
+function dropClient(serverId: string): void {
+  const pooled = clientPool.get(serverId);
+  if (!pooled) return;
+  clientPool.delete(serverId);
+  void pooled.client.close().catch(() => {
+    // closing a failed connection is best-effort
+  });
+}
+
+// Transport-level failures are worth one reconnect; tool errors (which may have
+// side effects) are never retried.
+function isConnectionError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /closed|disconnect|not connected|terminated|socket|ECONN|EPIPE|fetch failed|network/i.test(msg);
+}
+
+async function withServerClient<T>(server: McpServer, fn: (client: McpClient) => Promise<T>): Promise<T> {
   try {
-    return await fn(client);
-  } finally {
-    try {
-      await client.close();
-    } catch {
-      // closing a failed connection is best-effort
-    }
+    return await fn(await acquireClient(server));
+  } catch (error) {
+    if (!isConnectionError(error)) throw error;
+    dropClient(server.id);
+    return fn(await acquireClient(server));
   }
 }
 
-export async function discoverTools(server: McpServer): Promise<DiscoveredTool[]> {
-  return withClient(server, async (client) => {
+// Cached tool descriptors (name + description + input schema). A second
+// consumer in the same turn reuses the cache instead of re-listing.
+async function serverToolDescriptors(
+  server: McpServer,
+): Promise<Record<string, { description?: string; inputSchema?: unknown }>> {
+  const fingerprint = serverFingerprint(server);
+  const cached = toolCache.get(server.id);
+  if (cached && cached.fingerprint === fingerprint && Date.now() - cached.at < TOOL_CACHE_TTL_MS) {
+    return cached.tools;
+  }
+  const descriptors = await withServerClient(server, async (client) => {
     const toolSet = await withTimeout(client.tools(), `list tools on "${server.name}"`);
-    return Object.entries(toolSet).map(([name, impl]) => ({
-      server: server.name,
-      serverId: server.id,
-      name,
-      qualifiedName: qualifiedToolName(server, name),
-      description: (impl as { description?: string }).description ?? "",
-    }));
+    return Object.fromEntries(
+      Object.entries(toolSet).map(([name, impl]) => [
+        name,
+        {
+          description: (impl as { description?: string }).description,
+          inputSchema: (impl as { inputSchema?: unknown }).inputSchema,
+        },
+      ]),
+    );
   });
+  toolCache.set(server.id, { fingerprint, at: Date.now(), tools: descriptors });
+  return descriptors;
+}
+
+function serverToolset(
+  server: McpServer,
+  descriptors: Record<string, { description?: string; inputSchema?: unknown }>,
+): ToolSet {
+  const out: ToolSet = {};
+  for (const [name, d] of Object.entries(descriptors)) {
+    const wrapped = {
+      description: d.description ?? `MCP tool ${name} on ${server.name}`,
+      inputSchema: (d.inputSchema ?? { type: "object", properties: {} }) as never,
+      execute: async (args: Record<string, unknown>) =>
+        withServerClient(server, async (client) => {
+          const toolSet = await withTimeout(client.tools(), `list tools on "${server.name}"`);
+          const impl = toolSet[name];
+          if (!impl || typeof (impl as { execute?: unknown }).execute !== "function") {
+            throw new Error(`Tool "${name}" was not found on "${server.name}".`);
+          }
+          return withTimeout(
+            impl.execute(args, { toolCallId: randomUUID(), messages: [], context: {} }) as Promise<unknown>,
+            `call "${name}" on "${server.name}"`,
+          );
+        }),
+    };
+    out[name] = wrapped as unknown as ToolSet[string];
+  }
+  return out;
+}
+
+// Called by the MCP API on add / edit / enable / disable / delete so the next
+// chat turn never plans against a stale server or a closed connection.
+export function invalidateMcpCache(serverId?: string): void {
+  if (serverId) {
+    dropClient(serverId);
+    toolCache.delete(serverId);
+    return;
+  }
+  for (const id of [...clientPool.keys()]) dropClient(id);
+  toolCache.clear();
+}
+
+// Close every pooled client. Scripts and tests call this before exiting:
+// a pooled stdio server keeps its child process alive otherwise.
+export async function closeMcpClients(): Promise<void> {
+  const clients = [...clientPool.values()].map((pooled) => pooled.client);
+  clientPool.clear();
+  toolCache.clear();
+  await Promise.all(clients.map((client) => client.close().catch(() => {})));
+}
+
+export async function discoverTools(server: McpServer): Promise<DiscoveredTool[]> {
+  const descriptors = await serverToolDescriptors(server);
+  return Object.entries(descriptors).map(([name, d]) => ({
+    server: server.name,
+    serverId: server.id,
+    name,
+    qualifiedName: qualifiedToolName(server, name),
+    description: d.description ?? "",
+  }));
 }
 
 // Tool discovery across every enabled server; a dead server is reported, not
@@ -282,29 +412,31 @@ export async function discoverAllTools(): Promise<{
 }
 
 // Live toolset for streamText: every enabled server's tools, namespaced by
-// server name so servers with colliding tool names coexist in one loop.
+// server name so servers with colliding tool names coexist in one loop. Tool
+// descriptors come from the 60s cache; calls go through the pooled client.
 export async function mcpToolset(): Promise<{
   tools: ToolSet;
   errors: { server: string; message: string }[];
 }> {
   const servers = listMcpServers().filter((s) => s.enabled);
   const results = await Promise.allSettled(
-    servers.map(async (s) => ({ server: s, toolSet: await withClient(s, (c) => c.tools()) })),
+    servers.map(async (s) => ({ server: s, descriptors: await serverToolDescriptors(s) })),
   );
   const tools: ToolSet = {};
   const errors: { server: string; message: string }[] = [];
-  for (const r of results) {
+  results.forEach((r, i) => {
     if (r.status === "fulfilled") {
-      for (const [name, impl] of Object.entries(r.value.toolSet)) {
+      const set = serverToolset(r.value.server, r.value.descriptors);
+      for (const [name, impl] of Object.entries(set)) {
         tools[qualifiedToolName(r.value.server, name)] = impl;
       }
     } else {
       errors.push({
-        server: "unknown",
+        server: servers[i].name,
         message: r.reason instanceof Error ? r.reason.message : String(r.reason),
       });
     }
-  }
+  });
   return { tools, errors };
 }
 
@@ -317,7 +449,7 @@ export async function callMcpTool(
   const server = getMcpServer(serverId);
   if (!server) throw new Error("Unknown MCP server.");
   if (!server.enabled) throw new Error(`MCP server "${server.name}" is disabled.`);
-  return withClient(server, async (client) => {
+  return withServerClient(server, async (client) => {
     const toolSet = await withTimeout(client.tools(), `list tools on "${server.name}"`);
     const impl = toolSet[toolName];
     if (!impl || typeof (impl as { execute?: unknown }).execute !== "function") {

@@ -12,7 +12,7 @@ export type StepStatus = "pending" | "running" | "done" | "error" | "skipped";
 
 export interface DurableStepDef {
   name: string;
-  run: (input: unknown, ctx: { checkpoint: unknown }) => Promise<unknown>;
+  run: (input: unknown, ctx: { checkpoint: unknown; runId: string }) => Promise<unknown>;
 }
 
 const LEASE_MS = 60_000;
@@ -169,7 +169,7 @@ export async function tick(workerId = `w-${process.pid}`, opts: { heartbeatMs?: 
   }, Math.max(20, opts.heartbeatMs ?? LEASE_MS / 3));
   heartbeat.unref?.();
   try {
-    let ctx: { checkpoint: unknown } = { checkpoint: claimed.checkpoint };
+    let ctx: { checkpoint: unknown; runId: string } = { checkpoint: claimed.checkpoint, runId: id };
     for (let seq = start; seq >= 0 && seq < stepDefs.length; seq++) {
       if (leaseLost) throw new LeaseLostError();
       const def = stepDefs[seq];
@@ -180,7 +180,7 @@ export async function tick(workerId = `w-${process.pid}`, opts: { heartbeatMs?: 
         if (leaseLost) throw new LeaseLostError();
         db.prepare("UPDATE durable_steps SET status='done', output=?, finished_at=? WHERE run_id=? AND seq=?")
           .run(JSON.stringify(output ?? null), new Date().toISOString(), id, seq);
-        ctx = { checkpoint: { lastStep: def.name, output } };
+        ctx = { checkpoint: { lastStep: def.name, output }, runId: id };
         db.prepare("UPDATE durable_runs SET checkpoint=?, updated_at=? WHERE id=?")
           .run(JSON.stringify({ lastStep: def.name, output }), new Date().toISOString(), id);
       } catch (err) {

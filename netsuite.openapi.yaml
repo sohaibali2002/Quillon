@@ -1,0 +1,271 @@
+openapi: 3.1.0
+info:
+  title: Quillon NetSuite integration contract
+  version: 1.0.0
+  description: >
+    Contract for the ns_* native tools Quillon exposes to the model once a
+    NetSuite account is connected via Token-Based Authentication. Each
+    operation lists the SuiteTalk REST Web Services endpoint it calls
+    (https://docs.oracle.com/en/cloud/saas/netsuite/ns-online-help — REST Web
+    Services). Every operationId must match an entry of NS_TOOLS in
+    src/lib/netsuite.ts — pinned by scripts/check-netsuite-contract.mjs.
+servers:
+  - url: https://{accountId}.suitetalk.api.netsuite.com/services/rest
+    variables:
+      accountId:
+        default: "123456"
+        description: NetSuite account ID; sandbox accounts keep their -sb suffix in the host
+security:
+  - tokenBasedAuth: []
+tags:
+  - name: query
+  - name: records
+  - name: metadata
+paths:
+  /query/v1/suiteql:
+    post:
+      tags: [query]
+      operationId: ns_suiteql
+      summary: SuiteQL with automatic offset paging (page limit <= 100)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [q]
+              properties:
+                q: { type: string, description: SuiteQL SELECT statement }
+                maxRows: { type: integer, minimum: 1, maximum: 10000, default: 1000 }
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, maximum: 100, default: 100 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: Paged results (items, hasMore)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Page" }
+        "4xx": { $ref: "#/components/responses/NsError" }
+        "429": { description: Rate limited; retried once honoring Retry-After }
+  /record/v1/{recordType}:
+    get:
+      tags: [records]
+      operationId: ns_list_records
+      summary: List a record type with paging
+      parameters:
+        - { name: recordType, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, maximum: 100 } }
+        - { name: offset, in: query, schema: { type: integer } }
+      responses:
+        "200": { description: Paged record Ids, $ref: "#/components/schemas/Page" }
+        "404": { $ref: "#/components/responses/NsError" }
+    post:
+      tags: [records]
+      operationId: ns_create_record
+      summary: Create one record
+      parameters:
+        - { name: recordType, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Fields" }
+      responses:
+        "201":
+          description: Created; body holds the new internal Id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { id: { type: string } }
+        "4xx": { $ref: "#/components/responses/NsError" }
+  /record/v1/{recordType}/{id}:
+    get:
+      tags: [records]
+      operationId: ns_get_record
+      summary: Read one record by internal Id or eid:<externalId>
+      parameters:
+        - { name: recordType, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: expandSubResources, in: query, schema: { type: string, enum: ["true", "false"] } }
+      responses:
+        "200": { description: Record JSON }
+        "404": { $ref: "#/components/responses/NsError" }
+    patch:
+      tags: [records]
+      operationId: ns_update_record
+      summary: Patch one record; `replace` names sublists overwritten instead of appended
+      parameters:
+        - { name: recordType, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: replace, in: query, schema: { type: string }, description: Comma-separated sublist scriptIds }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Fields" }
+      responses:
+        "204": { description: Updated }
+        "4xx": { $ref: "#/components/responses/NsError" }
+    delete:
+      tags: [records]
+      operationId: ns_delete_record
+      summary: Delete one record
+      parameters:
+        - { name: recordType, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NsError" }
+  /record/v1/{recordType}/{externalId}:
+    put:
+      tags: [records]
+      operationId: ns_upsert_record
+      summary: Create-or-update by external ID; the 204 response's Location header carries the record Id
+      parameters:
+        - { name: recordType, in: path, required: true, schema: { type: string } }
+        - { name: externalId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Fields" }
+      responses:
+        "204":
+          description: Upserted
+          headers:
+            Location: { description: URL of the upserted record, schema: { type: string } }
+        "4xx": { $ref: "#/components/responses/NsError" }
+  /record/v1/{recordType}/!batch-upsert:
+    post:
+      tags: [records]
+      operationId: ns_batch_upsert
+      summary: >
+        Synthetic Quillon operation (not a NetSuite endpoint): expands to a
+        sequence of up to 50 PUT /record/v1/{recordType}/{externalId} calls,
+        each reported individually.
+      parameters:
+        - { name: recordType, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [records]
+              properties:
+                records:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [externalId, fields]
+                    properties:
+                      externalId: { type: string }
+                      fields: { $ref: "#/components/schemas/Fields" }
+      responses:
+        "200":
+          description: Per-record results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        externalId: { type: string }
+                        ok: { type: boolean }
+                        id: { type: [string, "null"] }
+                        error: { type: string }
+  /record/v1/{recordType}/{id}/{sublist}:
+    get:
+      tags: [records]
+      operationId: ns_get_sublist
+      summary: Read one sublist of a record
+      parameters:
+        - { name: recordType, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: sublist, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Sublist lines }
+        "404": { $ref: "#/components/responses/NsError" }
+  /record/v1/{recordType}/{id}/!transform/{toType}:
+    post:
+      tags: [records]
+      operationId: ns_transform
+      summary: Transform a record into another type
+      parameters:
+        - { name: recordType, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: toType, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Fields" }
+      responses:
+        "201":
+          description: Transformed; body holds the new record Id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { id: { type: string } }
+        "4xx": { $ref: "#/components/responses/NsError" }
+  /record/v1/metadata-catalog/{recordType}:
+    get:
+      tags: [metadata]
+      operationId: ns_metadata
+      summary: Record type metadata catalog (fields, sublists, types)
+      parameters:
+        - { name: recordType, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Metadata catalog entry }
+        "404": { $ref: "#/components/responses/NsError" }
+components:
+  securitySchemes:
+    tokenBasedAuth:
+      type: oauth1
+      description: >
+        NetSuite Token-Based Authentication (OAuth 1.0, HMAC-SHA256). The
+        signature base string covers the request method, URL and the six
+        oauth_* parameters; the realm carries the account ID.
+  schemas:
+    Fields:
+      type: object
+      additionalProperties: true
+      description: REST record JSON field values, including sublist objects
+    Page:
+      type: object
+      properties:
+        items: { type: array, items: { type: object } }
+        hasMore: { type: boolean }
+        totalResults: { type: integer }
+    NsErrorBody:
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        o:errorCode: { type: string }
+        o:errorDetails:
+          type: array
+          items:
+            type: object
+            properties:
+              detail: { type: string }
+              o:errorCode: { type: string }
+              o:errorPath: { type: string }
+        o:correlationId: { type: string }
+  responses:
+    NsError:
+      description: NetSuite error envelope, surfaced verbatim to the caller
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/NsErrorBody" }

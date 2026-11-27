@@ -21,7 +21,7 @@ export function setupStatus(): {
   const has = (...names: string[]) => names.some((n) => Boolean(process.env[n]));
   const localLlm = has("OLLAMA_BASE_URL") || has("LOCAL_LLM_BASE_URL");
   const checks: SetupCheck[] = [
-    { key: "model", label: "A model is configured", done: true, how: "Works in mock mode out of the box; add any provider key for live models." },
+    { key: "model", label: "A model is configured", done: has("AI_GATEWAY_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY") || localLlm, how: "Set AI_GATEWAY_API_KEY or any provider key, or point OLLAMA_BASE_URL at your local Ollama." },
     { key: "live-model", label: "A live model key is set (or a local LLM is running)", done: has("AI_GATEWAY_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY") || localLlm, how: "Set AI_GATEWAY_API_KEY or OPENAI_API_KEY, or point OLLAMA_BASE_URL at your local Ollama." },
     { key: "brand", label: "A brand kit exists", done: listKits().length > 0, how: "Create a kit in the Brand hub — colors, fonts, guidelines and assets." },
     { key: "templates", label: "A template was cloned or generated", done: listTemplates().length > 0, how: "Upload a .pptx/.docx in the Studio to clone its exact theme, or use a standard template." },

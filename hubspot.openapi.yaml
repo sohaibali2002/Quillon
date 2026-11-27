@@ -1,0 +1,309 @@
+openapi: 3.1.0
+info:
+  title: Quillon HubSpot integration contract
+  version: 1.0.0
+  description: >
+    Contract for the hs_* native tools Quillon exposes to the model once a
+    HubSpot Private App is connected. Each operation lists the HubSpot CRM v3
+    / associations v4 endpoint it calls. Every operationId must match an entry
+    of HS_TOOLS in src/lib/hubspot.ts — pinned by
+    scripts/check-hubspot-contract.mjs.
+servers:
+  - url: https://api.hubapi.com
+security:
+  - privateAppToken: []
+tags:
+  - name: search
+  - name: records
+  - name: associations
+  - name: commerce
+  - name: engagement
+paths:
+  /#hs_search:
+    post:
+      tags: [search]
+      operationId: hs_search
+      summary: CRM search with filter DSL, full pagination via after
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                objectType: { type: string }
+                filterGroups:
+                  type: array
+                  maxItems: 3
+                  description: Groups ORed together, filters inside a group ANDed
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Filter" }
+                query: { type: string }
+                properties: { type: array, items: { type: string } }
+                sorts: { type: array, items: { type: string } }
+                maxResults: { type: integer, minimum: 10, maximum: 10000, default: 200 }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+        "400": { $ref: "#/components/responses/HsError" }
+        "429": { description: Rate limited; retried once honoring Retry-After }
+  /#hs_get_object:
+    get:
+      tags: [records]
+      operationId: hs_get_object
+      summary: Read one record by Id, or by unique property (idProperty)
+      parameters:
+        - name: objectType
+          in: query
+          required: true
+          schema: { type: string }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: idProperty
+          in: query
+          schema: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Record" }
+        "404": { $ref: "#/components/responses/HsError" }
+  /#hs_create_object:
+    post:
+      tags: [records]
+      operationId: hs_create_object
+      summary: Create one record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [objectType, properties]
+              properties:
+                objectType: { type: string }
+                properties: { $ref: "#/components/schemas/Properties" }
+      responses:
+        "201": { $ref: "#/components/responses/Record" }
+        "400": { $ref: "#/components/responses/HsError" }
+  /#hs_update_object:
+    patch:
+      tags: [records]
+      operationId: hs_update_object
+      summary: Patch one record by Id
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [properties]
+              properties:
+                properties: { $ref: "#/components/schemas/Properties" }
+      responses:
+        "200": { $ref: "#/components/responses/Record" }
+        "400": { $ref: "#/components/responses/HsError" }
+  /#hs_delete_object:
+    delete:
+      tags: [records]
+      operationId: hs_delete_object
+      summary: Archive one record by Id
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Archived }
+        "404": { $ref: "#/components/responses/HsError" }
+  /#hs_batch_read:
+    post:
+      tags: [records]
+      operationId: hs_batch_read
+      summary: Read up to 100 records by Id list
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids: { type: array, maxItems: 100, items: { type: string } }
+                properties: { type: array, items: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+        "400": { $ref: "#/components/responses/HsError" }
+  /#hs_batch_upsert:
+    post:
+      tags: [records]
+      operationId: hs_batch_upsert
+      summary: Upsert up to 100 records keyed by a unique-value property
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idProperty, records]
+              properties:
+                idProperty: { type: string }
+                records:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [id, properties]
+                    properties:
+                      id: { type: string, description: Value of the idProperty }
+                      properties: { $ref: "#/components/schemas/Properties" }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+        "400": { $ref: "#/components/responses/HsError" }
+  /#hs_associate:
+    put:
+      tags: [associations]
+      operationId: hs_associate
+      summary: Associate two records (v4), optionally with a label
+      parameters:
+        - name: fromObjectType
+          in: query
+          required: true
+          schema: { type: string }
+        - name: fromId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: toObjectType
+          in: query
+          required: true
+          schema: { type: string }
+        - name: toId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: definitionId
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: Association created }
+        "400": { $ref: "#/components/responses/HsError" }
+  /#hs_list_associations:
+    get:
+      tags: [associations]
+      operationId: hs_list_associations
+      summary: List records associated to one record for a target type
+      parameters:
+        - name: toObjectType
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Association list with type ids }
+        "404": { $ref: "#/components/responses/HsError" }
+  /#hs_add_line_items:
+    post:
+      tags: [commerce]
+      operationId: hs_add_line_items
+      summary: Batch-create line items and associate each to a deal or quote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [parentObjectType, parentId, lineItems]
+              properties:
+                parentObjectType: { type: string, enum: [deals, quotes] }
+                parentId: { type: string }
+                lineItems:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [name, quantity, price]
+                    properties:
+                      name: { type: string }
+                      quantity: { type: number, exclusiveMinimum: 0 }
+                      price: { type: number, minimum: 0 }
+      responses:
+        "200": { description: lineItemIds plus per-item association status }
+        "400": { $ref: "#/components/responses/HsError" }
+  /#hs_pipelines:
+    get:
+      tags: [commerce]
+      operationId: hs_pipelines
+      summary: List pipelines and stages for deals or tickets
+      parameters:
+        - name: objectType
+          in: query
+          required: true
+          schema: { type: string, enum: [deals, tickets] }
+      responses:
+        "200": { description: Pipelines with stage ids and labels }
+        "400": { $ref: "#/components/responses/HsError" }
+  /#hs_log_engagement:
+    post:
+      tags: [engagement]
+      operationId: hs_log_engagement
+      summary: Create a note/email/call/task/meeting and associate it to a record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, body, toObjectType, toId]
+              properties:
+                type: { type: string, enum: [note, email, call, task, meeting] }
+                body: { type: string }
+                toObjectType: { type: string }
+                toId: { type: string }
+                subject: { type: string }
+                status: { type: string }
+                dueAt: { type: string, format: date-time }
+      responses:
+        "200": { description: engagementId plus association outcome }
+        "400": { $ref: "#/components/responses/HsError" }
+  /#hs_owners:
+    get:
+      tags: [records]
+      operationId: hs_owners
+      summary: List owners for record assignment
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+        "400": { $ref: "#/components/responses/HsError" }
+components:
+  securitySchemes:
+    privateAppToken:
+      type: http
+      scheme: bearer
+      description: HubSpot Private App token from the hubspot connector credential
+  responses:
+    Results:
+      description: results array with total and fetched counts
+    Record:
+      description: One record with id and properties
+    HsError:
+      description: HubSpot error body {status:"error", category, message, errors}
+  schemas:
+    Filter:
+      type: object
+      required: [propertyName, operator]
+      properties:
+        propertyName: { type: string }
+        operator:
+          type: string
+          enum: [EQ, NEQ, LT, LTE, GT, GTE, BETWEEN, IN, NOT_IN, HAS_PROPERTY, NOT_HAS_PROPERTY, CONTAINS_TOKEN, NOT_CONTAINS_TOKEN]
+        value: {}
+        values: { type: array, items: {} }
+        highValue: {}
+    Properties:
+      type: object
+      description: Property name to value map
+      additionalProperties: true

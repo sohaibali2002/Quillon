@@ -5,16 +5,6 @@ import type { ChatTools } from "@/lib/ai-types";
 
 type ToolPart = ToolUIPart<ChatTools> | DynamicToolUIPart;
 
-type WeatherOutput = {
-  location: string;
-  temperatureF: number;
-  condition: string;
-};
-
-type ConversionOutput = { celsius: number };
-
-type TimeOutput = { city: string; timeIso: string };
-
 type CodeOutput = {
   language: string;
   stdout: string;
@@ -73,39 +63,6 @@ function Frame({
         {streaming ? " · running…" : ""}
       </div>
       {children}
-    </div>
-  );
-}
-
-function WeatherBody({ output }: { output: WeatherOutput }) {
-  const celsius = Math.round(((output.temperatureF - 32) * 5) / 9);
-  return (
-    <div className="weather-main">
-      <strong>{output.location}</strong>
-      <span className="weather-temp">{output.temperatureF}°F</span>
-      <span className="weather-sub">
-        {output.condition} · {celsius}°C
-      </span>
-    </div>
-  );
-}
-
-function ConversionBody({ output }: { output: ConversionOutput }) {
-  return (
-    <div className="weather-main">
-      <span className="weather-temp">{output.celsius}°C</span>
-      <span className="weather-sub">converted from Fahrenheit</span>
-    </div>
-  );
-}
-
-function TimeBody({ output }: { output: TimeOutput }) {
-  return (
-    <div className="weather-main">
-      <strong>{output.city}</strong>
-      <span className="weather-sub">
-        {new Date(output.timeIso).toLocaleString()}
-      </span>
     </div>
   );
 }
@@ -229,10 +186,6 @@ function ConnectorSearchBody({ input, output }: { input: SearchInput; output: Co
 }
 
 function OutputBody({ name, output, input }: { name: string; output: unknown; input?: unknown }) {
-  if (name === "weather") return <WeatherBody output={output as WeatherOutput} />;
-  if (name === "convertTemperature")
-    return <ConversionBody output={output as ConversionOutput} />;
-  if (name === "getTime") return <TimeBody output={output as TimeOutput} />;
   if (name === "runCode") return <CodeBody output={output as CodeOutput} />;
   if (name === "remember") return <MemoryBody output={output as RememberOutput} />;
   if (name === "recall") return <RecallBody output={output as RecallOutput} />;

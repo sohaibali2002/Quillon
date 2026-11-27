@@ -15,7 +15,7 @@ type AgentResult = {
 
 export default function AgentPanel() {
   const [prompt, setPrompt] = useState(
-    "What is the weather in San Francisco? Convert it to Celsius for me.",
+    "Run a Python snippet that prints the first ten prime numbers and explain it.",
   );
   const [mode, setMode] = useState<"text" | "structured">("text");
   const [result, setResult] = useState<AgentResult | null>(null);

@@ -15,35 +15,37 @@ type Config = {
 };
 
 export default function ModeBadge() {
-  const [mock, setMock] = useState<boolean | null>(null);
+  const [live, setLive] = useState<boolean | null>(null);
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
 
   useEffect(() => {
     fetch("/api/config")
       .then((r) => r.json())
       .then((c: Config) => {
-        setMock(!c.gateway.set);
+        setLive(Boolean(c.gateway.set) || (c.providers ?? []).some((p) => p.available));
         setProviders(c.providers ?? []);
       })
-      .catch(() => setMock(true));
+      .catch(() => setLive(false));
   }, []);
 
-  if (mock === null) return null;
+  if (live === null) return null;
 
-  const live = providers.filter((p) => p.available);
+  const native = providers.filter((p) => p.available);
   const detail =
-    live.length > 0
-      ? `native: ${live.map((p) => p.label).join(", ")}`
-      : "no native provider keys set";
+    native.length > 0
+      ? `native: ${native.map((p) => p.label).join(", ")}`
+      : live
+        ? "AI Gateway"
+        : "no provider key set";
 
   return (
     <span
-      className={`badge ${mock ? "badge-mock" : "badge-live"}`}
+      className={`badge ${live ? "badge-live" : "badge-warn"}`}
       role="status"
-      title={mock ? `${detail} — set AI_GATEWAY_API_KEY or a provider key to go live` : detail}
+      title={live ? detail : `${detail} — set AI_GATEWAY_API_KEY or a provider key to go live`}
     >
       <span className="chip-dot" style={{ background: "currentColor" }} aria-hidden="true" />
-      {mock ? "Mock mode" : "Live"}
+      {live ? "Live" : "No provider key"}
     </span>
   );
 }

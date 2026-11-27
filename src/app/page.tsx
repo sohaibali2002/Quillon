@@ -76,10 +76,10 @@ const primitives = [
 ];
 
 const streamRows = [
-  { t: "0.00s", state: "run", tag: "streaming", k: 'tool-input-start · weather { location: "Lis' },
-  { t: "0.38s", state: "run", tag: "input", k: 'tool-input-available · convertTemperature { 21, "C" }' },
-  { t: "0.91s", state: "ok", tag: "output", k: "tool-output-available · getTime → 21:04:12" },
-  { t: "1.12s", state: "", tag: "text", k: "text-delta · Three cities, one shared reading" },
+  { t: "0.00s", state: "run", tag: "streaming", k: 'tool-input-start · runCode { language: "py" }' },
+  { t: "0.38s", state: "run", tag: "input", k: "tool-input-available · runCode { code: \"print(sum(range(1,11)))\" }" },
+  { t: "0.91s", state: "ok", tag: "output", k: "tool-output-available · runCode → 55" },
+  { t: "1.12s", state: "", tag: "text", k: "text-delta · The sum of 1 to 10 is 55" },
 ];
 
 const codeSample = `"use client";
@@ -372,8 +372,8 @@ export default function Home() {
             <span className="eyebrow">Ready when you are</span>
             <h2>Open a desk and watch it stream.</h2>
             <p>
-              The workbench starts in mock mode, so every surface is live before you add a
-              single key. Point it at a provider whenever you want real tokens.
+              Point it at a provider key (AI Gateway, OpenRouter, OpenAI, Anthropic,
+              Groq, Cerebras or a local Ollama) and every surface streams live tokens.
             </p>
             <Link className="btn" href="/workspace">
               Open the workbench <Arrow />
@@ -421,7 +421,7 @@ export default function Home() {
           </div>
           <div className="foot-base">
             <span>© 2026 Quillon</span>
-            <span>Apache-2.0 · self-hosted · mock mode by default</span>
+            <span>Apache-2.0 · self-hosted · bring your own model key</span>
           </div>
         </div>
       </footer>

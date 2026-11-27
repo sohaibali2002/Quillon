@@ -7,7 +7,7 @@
 import { generateText, Output, stepCountIs, ToolLoopAgent } from "ai";
 import { z } from "zod";
 import { resolveModelAny } from "@/lib/models";
-import { platformTools } from "@/lib/tools";
+import { builtinTools } from "@/lib/tools";
 
 export const MAX_TASKS = 5;
 
@@ -102,7 +102,7 @@ export async function runWorkers(
       const worker = new ToolLoopAgent({
         model: await resolveModelAny(modelId),
         instructions: WORKER_INSTRUCTIONS[task.kind],
-        tools: platformTools,
+        tools: builtinTools,
         stopWhen: stepCountIs(5),
         output: Output.object({ schema: workerSchema }),
       });

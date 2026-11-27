@@ -20,12 +20,24 @@ export type CompactionResult = {
   tokenEstimate: number;
 };
 
+// Attachments count: a file part carries its name and, from the data URL,
+// a byte estimate. The model never sees older-turn bytes, but tokens were
+// previously estimated at zero for files, so a thread of images never compacted.
+function fileText(part: { mediaType?: string; filename?: string; url?: string }): string {
+  const url = part.url ?? "";
+  const b64 = /^data:[^;,]*;base64,/.exec(url);
+  const bytes = b64 ? Math.floor(((url.length - b64[0].length) * 3) / 4) : 0;
+  const size = bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
+  return `[attached file: ${part.filename ?? "file"} (${part.mediaType ?? "unknown"}, ~${size})]`;
+}
+
 export function messageText(messages: UIMessage[]): string {
   return messages
     .map((m) => {
       const body = m.parts
         .map((p) => {
           if (p.type === "text") return p.text;
+          if (p.type === "file") return fileText(p as { mediaType?: string; filename?: string; url?: string });
           if (p.type.startsWith("tool-")) return `[tool ${p.type.slice(5)}]`;
           return "";
         })

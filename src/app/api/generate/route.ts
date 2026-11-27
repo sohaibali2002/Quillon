@@ -13,7 +13,7 @@ import {
   type UIMessage,
 } from "ai";
 import { resolveModelAny as resolveModel } from "@/lib/models";
-import { platformTools } from "@/lib/tools";
+import { builtinTools } from "@/lib/tools";
 
 import { guard } from "@/lib/guard";
 export const maxDuration = 30;
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
   if (body.stream) {
     const result = streamText({
       model,
-      tools: platformTools,
+      tools: builtinTools,
       messages,
       onError({ error }) {
         console.error("generate stream error:", error);
@@ -48,7 +48,7 @@ export async function POST(req: Request) {
 
   const result = await generateText({
     model,
-    tools: platformTools,
+    tools: builtinTools,
     messages,
   });
 

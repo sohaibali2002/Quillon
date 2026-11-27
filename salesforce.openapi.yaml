@@ -1,0 +1,350 @@
+openapi: 3.1.0
+info:
+  title: Quillon Salesforce integration contract
+  version: 1.0.0
+  description: >
+    Contract for the sf_* native tools Quillon exposes to the model once a
+    Salesforce org is connected. Each operation lists the Salesforce REST /
+    Bulk API 2.0 endpoint it calls (version v60.0) and its input schema.
+    Every operationId must match an entry of SF_TOOLS in src/lib/salesforce.ts
+    — pinned by scripts/check-salesforce-contract.mjs.
+servers:
+  - url: /services/data/v60.0
+security:
+  - bearerToken: []
+tags:
+  - name: query
+  - name: schema
+  - name: records
+  - name: bulk
+paths:
+  /#sf_soql_query:
+    get:
+      tags: [query]
+      operationId: sf_soql_query
+      summary: SOQL with automatic queryMore pagination (maxRecords cap, default 2000)
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: queryAll
+          in: query
+          schema: { type: boolean, default: false }
+        - name: maxRecords
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100000, default: 2000 }
+      responses:
+        "200": { $ref: "#/components/responses/Records" }
+        "400": { $ref: "#/components/responses/SfError" }
+  /#sf_sosl_search:
+    get:
+      tags: [query]
+      operationId: sf_sosl_search
+      summary: SOSL text search across objects
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Search results grouped by object }
+        "400": { $ref: "#/components/responses/SfError" }
+  /#sf_describe_global:
+    get:
+      tags: [schema]
+      operationId: sf_describe_global
+      summary: All org objects with label, keyPrefix, queryable
+      responses:
+        "200": { description: Object metadata list }
+        "400": { $ref: "#/components/responses/SfError" }
+  /#sf_describe_object:
+    get:
+      tags: [schema]
+      operationId: sf_describe_object
+      summary: Fields, picklist values, child relationships for one object
+      parameters:
+        - name: sobject
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Describe result }
+        "404": { $ref: "#/components/responses/SfError" }
+  /#sf_get_record:
+    get:
+      tags: [records]
+      operationId: sf_get_record
+      summary: Read one record by Id, optional field projection
+      parameters:
+        - name: sobject
+          in: query
+          required: true
+          schema: { type: string }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: fields
+          in: query
+          schema: { type: array, items: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/Record" }
+        "404": { $ref: "#/components/responses/SfError" }
+  /#sf_create_record:
+    post:
+      tags: [records]
+      operationId: sf_create_record
+      summary: Create one record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Fields" }
+      responses:
+        "201": { description: Created, returns id }
+        "400": { $ref: "#/components/responses/SfError" }
+  /#sf_update_record:
+    patch:
+      tags: [records]
+      operationId: sf_update_record
+      summary: Patch one record by Id
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Fields" }
+      responses:
+        "204": { description: Updated }
+        "400": { $ref: "#/components/responses/SfError" }
+  /#sf_upsert_record:
+    patch:
+      tags: [records]
+      operationId: sf_upsert_record
+      summary: Create-or-update by external Id field/value
+      parameters:
+        - name: externalIdField
+          in: query
+          required: true
+          schema: { type: string }
+        - name: externalId
+          in: query
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Fields" }
+      responses:
+        "200":
+          description: Upserted; created=true/false tells which
+        "400": { $ref: "#/components/responses/SfError" }
+  /#sf_delete_record:
+    delete:
+      tags: [records]
+      operationId: sf_delete_record
+      summary: Delete one record by Id
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/SfError" }
+  /#sf_create_records:
+    post:
+      tags: [records]
+      operationId: sf_create_records
+      summary: sObject Collections create, up to 200, allOrNone option
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CollectionRequest" }
+      responses:
+        "200": { description: Per-record results with id or errors }
+        "400": { $ref: "#/components/responses/SfError" }
+  /#sf_update_records:
+    patch:
+      tags: [records]
+      operationId: sf_update_records
+      summary: sObject Collections update, up to 200, allOrNone option
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CollectionRequest" }
+      responses:
+        "200": { description: Per-record results }
+        "400": { $ref: "#/components/responses/SfError" }
+  /#sf_get_records:
+    get:
+      tags: [records]
+      operationId: sf_get_records
+      summary: sObject Collections read by Id list, up to 200
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          schema: { type: array, maxItems: 200, items: { type: string } }
+      responses:
+        "200": { description: Records found }
+        "400": { $ref: "#/components/responses/SfError" }
+  /#sf_composite:
+    post:
+      tags: [records]
+      operationId: sf_composite
+      summary: Up to 25 ordered sub-requests, @{referenceId.Id} chaining, allOrNone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requests]
+              properties:
+                allOrNone: { type: boolean, default: true }
+                requests:
+                  type: array
+                  minItems: 1
+                  maxItems: 25
+                  items:
+                    type: object
+                    required: [method, url, referenceId]
+                    properties:
+                      method: { type: string, enum: [GET, POST, PATCH, DELETE] }
+                      url: { type: string }
+                      referenceId: { type: string }
+                      body: { $ref: "#/components/schemas/Fields" }
+      responses:
+        "200": { description: compositeResponse per sub-request }
+        "400": { $ref: "#/components/responses/SfError" }
+  /#sf_bulk_ingest_create:
+    post:
+      tags: [bulk]
+      operationId: sf_bulk_ingest_create
+      summary: Open Bulk API 2.0 ingest job (insert/update/upsert/delete/hardDelete)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operation, sobject]
+              properties:
+                operation: { type: string, enum: [insert, update, upsert, delete, hardDelete] }
+                sobject: { type: string }
+                externalIdField: { type: string, description: Required for upsert }
+                assignmentRuleId: { type: string }
+      responses:
+        "200": { description: Job with id and state Open }
+        "400": { $ref: "#/components/responses/SfError" }
+  /#sf_bulk_ingest_upload:
+    put:
+      tags: [bulk]
+      operationId: sf_bulk_ingest_upload
+      summary: Upload CSV batch (RFC 4180), then set state UploadComplete
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema: { type: string }
+      responses:
+        "201": { description: Batch accepted }
+        "400": { $ref: "#/components/responses/SfError" }
+  /#sf_bulk_ingest_status:
+    get:
+      tags: [bulk]
+      operationId: sf_bulk_ingest_status
+      summary: Job state, processed/failed counts
+      responses:
+        "200": { description: Job status }
+        "404": { $ref: "#/components/responses/SfError" }
+  /#sf_bulk_ingest_results:
+    get:
+      tags: [bulk]
+      operationId: sf_bulk_ingest_results
+      summary: Per-record results CSV for a finished job
+      responses:
+        "200":
+          description: CSV with sf__Success, sf__Error and created record ids
+          content:
+            text/csv:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/SfError" }
+  /#sf_bulk_query:
+    post:
+      tags: [bulk]
+      operationId: sf_bulk_query
+      summary: Create bulk query job (no aggregate SOQL)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string }
+      responses:
+        "200": { description: Job with id; poll results }
+        "400": { $ref: "#/components/responses/SfError" }
+  /#sf_bulk_query_results:
+    get:
+      tags: [bulk]
+      operationId: sf_bulk_query_results
+      summary: Fetch result CSV; pass locator for the next page
+      parameters:
+        - name: locator
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: CSV page
+          content:
+            text/csv:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/SfError" }
+  /#sf_limits:
+    get:
+      tags: [query]
+      operationId: sf_limits
+      summary: Org limits vs current consumption (DailyApiRequests, Bulk API, ...)
+      responses:
+        "200": { description: Limit map }
+        "400": { $ref: "#/components/responses/SfError" }
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      description: Salesforce access token from the stored session or refresh-token flow
+  responses:
+    Records:
+      description: Query result with records, done, totalSize, fetched
+    Record:
+      description: One record with fields and attributes
+    SfError:
+      description: Salesforce error array [{message, errorCode, fields}]
+  schemas:
+    Fields:
+      type: object
+      description: Field API name to value map, e.g. {"Name":"Acme"}
+      additionalProperties: true
+    CollectionRequest:
+      type: object
+      required: [sobject, records]
+      properties:
+        sobject: { type: string }
+        allOrNone: { type: boolean, default: false }
+        records:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/Fields" }

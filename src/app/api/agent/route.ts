@@ -19,12 +19,11 @@ import {
 } from "ai";
 import { z } from "zod";
 import { createMemoryTools, memoryContext } from "@/lib/memory";
-import { mcpToolset } from "@/lib/mcp";
 import { resolveModelAny as resolveModel } from "@/lib/models";
 import { skillsContext } from "@/lib/skills";
-import { platformTools } from "@/lib/tools";
-import { ENTERPRISE_RECIPES } from "@/lib/enterprise-platforms";
-import { buildConnectedTools } from "@/lib/connector-sdk";
+import { unifiedToolset } from "@/lib/tool-registry";
+import { enforceCapabilities, selectRelevantTools, withToolTimeouts } from "@/lib/tool-policy";
+import { createOrchestrateTool } from "@/lib/orchestrator";
 
 import { guard } from "@/lib/guard";
 export const maxDuration = 60;
@@ -62,7 +61,7 @@ function promptFromBody(body: {
       .filter((p) => p.type === "text")
       .map((p) => p.text ?? "")
       .join(" ")
-      .trim() || "What is the weather in San Francisco?"
+      .trim() || "Run a Python snippet that prints 6*7 and explain the result."
   );
 }
 
@@ -100,10 +99,28 @@ export async function POST(req: Request) {
   const prompt = promptFromBody(body);
   const conversationId = body.conversationId ?? "agent";
 
-  const mcp = await mcpToolset();
-  if (mcp.errors.length > 0) {
-    console.error("mcp toolset errors:", JSON.stringify(mcp.errors));
+  const unified = await unifiedToolset(conversationId);
+  if (unified.mcpErrors.length > 0) {
+    console.error("mcp toolset errors:", JSON.stringify(unified.mcpErrors));
   }
+
+  // Policy: capability grants, relevance shortlist for this prompt, timeouts.
+  // Structured mode is a pure summarisation pass: exposing tools there makes
+  // models answer with a tool call instead of the JSON object, so it runs bare.
+  const toolset = withToolTimeouts(
+    selectRelevantTools(
+      enforceCapabilities(
+        {
+          ...unified.tools,
+          orchestrate: createOrchestrateTool(body.model),
+        },
+        unified.catalog,
+        conversationId,
+      ),
+      unified.catalog,
+      prompt,
+    ),
+  );
 
   const agent = new ToolLoopAgent({
     model: await resolveModel(body.model),
@@ -114,7 +131,7 @@ export async function POST(req: Request) {
     ]
       .filter(Boolean)
       .join("\n\n"),
-    tools: { ...platformTools, ...buildConnectedTools(ENTERPRISE_RECIPES), ...createMemoryTools(conversationId), ...mcp.tools },
+    tools: mode === "structured" ? undefined : toolset,
     stopWhen: stepCountIs(8),
     output:
       mode === "structured"
@@ -123,12 +140,24 @@ export async function POST(req: Request) {
   });
 
   if (mode === "structured") {
-    const result = await agent.generate({ prompt });
-    return Response.json({
-      output: result.output,
-      steps: result.steps.length,
-      usage: result.usage,
-    });
+    try {
+      const result = await agent.generate({ prompt });
+      return Response.json({
+        output: result.output,
+        steps: result.steps.length,
+        usage: result.usage,
+      });
+    } catch (e) {
+      // Some models answer in text instead of calling the forced output tool
+      // ("tool_use_failed"); fall back to a plain structured generation.
+      if (!(e instanceof Error) || !e.message.includes("did not call a tool")) throw e;
+      const { text } = await generateText({
+        model: await resolveModel(body.model),
+        prompt,
+        output: Output.object({ schema: summarySchema }),
+      });
+      return Response.json({ output: text, steps: 1, usage: undefined });
+    }
   }
 
   // Text mode: stream tool calls and text as UI message stream parts.

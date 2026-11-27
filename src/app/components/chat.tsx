@@ -10,34 +10,40 @@ import { BrandMark } from "./brand";
 
 type ModelOption = { id: string; label: string };
 
-// Mirrors the SDK's convertFileListToFileUIParts: File objects are read as
-// data URLs so they survive the JSON body sent to /api/chat.
-function toFileUIPart(file: File): Promise<FileUIPart> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) =>
-      resolve({
-        type: "file",
-        mediaType: file.type || "application/octet-stream",
-        filename: file.name,
-        url: e.target?.result as string,
-      });
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+// Upload once through /api/files and reference the returned id: the chat body
+// stays small, and the route re-sends bytes only for the latest turn.
+async function uploadFile(file: File): Promise<FileUIPart> {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    throw new Error(`${file.name} is over the 20 MB limit.`);
+  }
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch("/api/files", { method: "POST", body: form });
+  const body = (await res.json().catch(() => ({}))) as {
+    url?: string;
+    file?: { mediaType?: string; filename?: string };
+    error?: { message?: string };
+  };
+  if (!res.ok || !body.url) {
+    throw new Error(body.error?.message ?? `Upload failed (${res.status}).`);
+  }
+  return {
+    type: "file",
+    mediaType: body.file?.mediaType || file.type || "application/octet-stream",
+    filename: body.file?.filename ?? file.name,
+    url: body.url,
+  };
 }
 
 const starters = [
-  { label: "Weather", text: "What is the weather in Lisbon?" },
-  { label: "Convert", text: "Convert 21 degrees Celsius to Fahrenheit." },
-  { label: "Clock", text: "What time is it in Tokyo right now?" },
   { label: "Code", text: "Run a Python snippet that sums the numbers 1 to 10." },
+  { label: "Search", text: "Search GitHub for open issues about rate limits." },
+  { label: "Doc", text: "Create an Excel workbook of monthly revenue by region." },
 ];
 
 const toolCopy: Record<string, string> = {
-  weather: "Scripted conditions for a location",
-  convertTemperature: "Celsius ↔ Fahrenheit conversion",
-  getTime: "Current time for a zone",
   runCode: "Executes a snippet in the sandbox",
   remember: "Saves a fact to agent memory",
   recall: "Searches saved memories",
@@ -50,6 +56,7 @@ export default function Chat() {
   const [model, setModel] = useState("");
   const [input, setInput] = useState("");
   const [files, setFiles] = useState<FileUIPart[]>([]);
+  const [attachError, setAttachError] = useState("");
   const [elapsed, setElapsed] = useState<number | null>(null);
   const [ledger, setLedger] = useState<
     { id: string; round: number; ms: number; parts: number; toolCalls: number }[]
@@ -211,6 +218,17 @@ export default function Chat() {
 
       <div className="chat-grid">
         <div className="chat-main">
+          {(() => {
+            const last = [...messages].reverse().find((m) => m.role === "assistant");
+            const problems = last?.metadata?.mcpErrors ?? [];
+            if (problems.length === 0) return null;
+            return (
+              <div className="notice-warn" role="status">
+                Connector down this turn:{" "}
+                {problems.map((p) => `${p.server} (${p.message})`).join("; ")}
+              </div>
+            );
+          })()}
           <div className="chat-scroll" ref={scrollRef} tabIndex={0} aria-label="Messages">
             {messages.length === 0 ? (
               <div className="chat-empty">
@@ -335,6 +353,11 @@ export default function Chat() {
               submit();
             }}
           >
+            {attachError && (
+              <p className="notice-warn" role="alert">
+                {attachError}
+              </p>
+            )}
             {files.length > 0 && (
               <ul className="composer-files" aria-label="Selected attachments">
                 {files.map((f) => (
@@ -373,10 +396,18 @@ export default function Chat() {
                   type="file"
                   multiple
                   onChange={async (e) => {
-                    const picked = await Promise.all(
-                      Array.from(e.target.files ?? [], toFileUIPart),
+                    setAttachError("");
+                    const results = await Promise.allSettled(
+                      Array.from(e.target.files ?? [], uploadFile),
                     );
-                    setFiles((prev) => [...prev, ...picked]);
+                    const uploaded = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+                    const failed = results.flatMap((r) =>
+                      r.status === "rejected"
+                        ? [r.reason instanceof Error ? r.reason.message : "Upload failed."]
+                        : [],
+                    );
+                    if (uploaded.length > 0) setFiles((prev) => [...prev, ...uploaded]);
+                    if (failed.length > 0) setAttachError(failed.join(" "));
                     e.target.value = "";
                   }}
                 />
@@ -517,9 +548,8 @@ export default function Chat() {
           <div className="rail-block rail-note">
             <h3>Transport</h3>
             <p>
-              <code>POST /api/chat</code> with <code>DefaultChatTransport</code>. Without a
-              provider key the route answers from the mock runtime, so the desk works
-              offline.
+              <code>POST /api/chat</code> with <code>DefaultChatTransport</code>. Set a
+              provider key and the desk streams live tokens.
             </p>
           </div>
         </aside>

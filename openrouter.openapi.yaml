@@ -1,0 +1,545 @@
+openapi: 3.0.0
+info:
+  title: OpenRouter operations used by Quillon
+  version: 1.0.0
+  description: Trimmed from the official OpenRouter OpenAPI spec (uploaded openapi.yaml). Pinned by scripts/check-openrouter-contract.mjs and src/lib/openrouter.ts OR_TOOLS.
+paths:
+  /chat/completions:
+    post:
+      operationId: sendChatCompletionRequest
+      summary: Create a chat completion
+      tags:
+      - chat
+  /embeddings:
+    post:
+      operationId: createEmbeddings
+      summary: Submit an embedding request
+      tags:
+      - embed
+  /rerank:
+    post:
+      operationId: createRerank
+      summary: Submit a rerank request
+      tags:
+      - rerank
+  /models:
+    get:
+      operationId: getModels
+      summary: List all models and their properties
+      tags:
+      - models
+  /model/{author}/{slug}:
+    get:
+      operationId: getModel
+      summary: Get a model by its slug
+      tags:
+      - model
+  /models/{author}/{slug}/endpoints:
+    get:
+      operationId: listEndpoints
+      summary: List all endpoints for a model
+      tags:
+      - model_endpoints
+  /credits:
+    get:
+      operationId: getCredits
+      summary: Get remaining credits
+      tags:
+      - credits
+  /credits/purchases:
+    get:
+      operationId: getCreditPurchasesSetupGuide
+      summary: Agent setup guide, served at the purchases collection
+      tags:
+      - credit_purchases
+  /generation:
+    get:
+      operationId: getGeneration
+      summary: Get request & usage metadata for a generation
+      tags:
+      - generation
+  /activity:
+    get:
+      operationId: getUserActivity
+      summary: Get user activity grouped by endpoint
+      tags:
+      - activity
+  /analytics/meta:
+    get:
+      operationId: getAnalyticsMeta
+      summary: Get available analytics metrics and dimensions
+      tags:
+      - analytics_meta
+  /analytics/query:
+    post:
+      operationId: queryAnalytics
+      summary: Query analytics data
+      tags:
+      - analytics_query
+  /key:
+    get:
+      operationId: getCurrentKey
+      summary: Get current API key
+      tags:
+      - key_info
+  /keys:
+    get:
+      operationId: list
+      summary: List API keys
+      tags:
+      - keys_list
+    post:
+      operationId: createKeys
+      summary: Create a new API key
+      tags:
+      - keys_create
+  /keys/{hash}:
+    patch:
+      operationId: updateKeys
+      summary: Update an API key
+      tags:
+      - keys_update
+    delete:
+      operationId: deleteKeys
+      summary: Delete an API key
+      tags:
+      - keys_delete
+  /byok:
+    get:
+      operationId: listBYOKKeys
+      summary: List BYOK provider credentials
+      tags:
+      - byok_list
+    post:
+      operationId: createBYOKKey
+      summary: Create a BYOK provider credential
+      tags:
+      - byok_add
+  /byok/{id}:
+    delete:
+      operationId: deleteBYOKKey
+      summary: Delete a BYOK provider credential
+      tags:
+      - byok_delete
+  /files:
+    get:
+      operationId: listFiles
+      summary: List files
+      tags:
+      - files_list
+    post:
+      operationId: uploadFile
+      summary: Upload a file
+      tags:
+      - files_upload
+  /files/{file_id}:
+    get:
+      operationId: getFileMetadata
+      summary: Get file metadata
+      tags:
+      - files_metadata
+    delete:
+      operationId: deleteFile
+      summary: Delete a file
+      tags:
+      - files_delete
+  /files/{file_id}/content:
+    get:
+      operationId: downloadFileContent
+      summary: Download file content
+      tags:
+      - files_content
+  /batches:
+    get:
+      operationId: listBatches
+      summary: List batches
+      tags:
+      - batches_list
+    post:
+      operationId: createBatches
+      summary: Create a batch
+      tags:
+      - batches_create
+  /batches/{id}:
+    get:
+      operationId: getBatches
+      summary: Get a batch
+      tags:
+      - batches_get
+    delete:
+      operationId: deleteBatch
+      summary: Delete a batch
+      tags:
+      - batches_delete
+  /audio/transcriptions:
+    post:
+      operationId: createAudioTranscriptions
+      summary: Create transcription
+      tags:
+      - transcribe
+  /audio/speech:
+    post:
+      operationId: createAudioSpeech
+      summary: Create speech
+      tags:
+      - speech
+  /images:
+    post:
+      operationId: createImages
+      summary: Generate an image
+      tags:
+      - image
+  /videos:
+    post:
+      operationId: createVideos
+      summary: Submit a video generation request
+      tags:
+      - video_create
+  /videos/{jobId}:
+    get:
+      operationId: getVideos
+      summary: Poll video generation status
+      tags:
+      - video_status
+  /presets:
+    get:
+      operationId: listPresets
+      summary: List presets
+      tags:
+      - presets_list
+  /presets/{slug}:
+    get:
+      operationId: getPreset
+      summary: Get a preset
+      tags:
+      - preset_get
+    delete:
+      operationId: deletePreset
+      summary: Delete a preset
+      tags:
+      - preset_delete
+  /responses:
+    post:
+      operationId: createResponses
+      summary: Create a response
+      tags:
+      - responses
+  /messages:
+    post:
+      operationId: createMessages
+      summary: Create a message
+      tags:
+      - messages
+  /presets/{slug}/chat/completions:
+    post:
+      operationId: createPresetsChatCompletions
+      summary: Create a preset from a chat-completions request body
+      tags:
+      - preset_chat
+  /generation/feedback:
+    post:
+      operationId: submitGenerationFeedback
+      summary: Submit feedback for a generation
+      tags:
+      - generation_feedback
+  /generation/content:
+    get:
+      operationId: listGenerationContent
+      summary: Get stored prompt, completion, and error content for a generation
+      tags:
+      - generation_content
+  /audio/speech/models:
+    get:
+      operationId: listSpeechModels
+      summary: List text-to-speech models
+      tags:
+      - speech_models
+  /audio/speech/models/{author}/{slug}:
+    get:
+      operationId: getSpeechModel
+      summary: Get a text-to-speech model
+      tags:
+      - speech_model
+  /embeddings/models:
+    get:
+      operationId: listEmbeddingsModels
+      summary: List all embeddings models
+      tags:
+      - embeddings_models
+  /images/models:
+    get:
+      operationId: listImageModels
+      summary: List image generation models
+      tags:
+      - images_models
+  /videos/models:
+    get:
+      operationId: listVideosModels
+      summary: List all video generation models
+      tags:
+      - videos_models
+  /models/count:
+    get:
+      operationId: listModelsCount
+      summary: Get total count of available models
+      tags:
+      - models_count
+  /models/user:
+    get:
+      operationId: listModelsUser
+      summary: List models filtered by user provider preferences, privacy settings, and guardrails
+      tags:
+      - models_user
+  /providers:
+    get:
+      operationId: listProviders
+      summary: List all providers
+      tags:
+      - providers
+  /tools:
+    get:
+      operationId: listTools
+      summary: List server tools
+      tags:
+      - tools_list
+  /tools/{name}:
+    get:
+      operationId: getTool
+      summary: Get a server tool
+      tags:
+      - tool_get
+  /benchmarks:
+    get:
+      operationId: getBenchmarks
+      summary: List Benchmarks
+      tags:
+      - benchmarks
+  /classifications/task:
+    get:
+      operationId: getTaskClassifications
+      summary: Task classification market share
+      tags:
+      - classifications_task
+  /videos/{jobId}/content:
+    get:
+      operationId: listVideosContent
+      summary: Download generated video content
+      tags:
+      - video_content
+  /workspaces:
+    get:
+      operationId: listWorkspaces
+      summary: List workspaces
+      tags:
+      - workspaces_list
+    post:
+      operationId: createWorkspace
+      summary: Create a workspace
+      tags:
+      - workspaces_create
+  /workspaces/{id}:
+    get:
+      operationId: getWorkspace
+      summary: Get a workspace
+      tags:
+      - workspace_get
+    patch:
+      operationId: updateWorkspace
+      summary: Update a workspace
+      tags:
+      - workspace_update
+    delete:
+      operationId: deleteWorkspace
+      summary: Delete a workspace
+      tags:
+      - workspace_delete
+  /workspaces/{id}/members/add:
+    post:
+      operationId: bulkAddWorkspaceMembers
+      summary: Bulk add members to a workspace
+      tags:
+      - workspace_members_add
+  /workspaces/{workspace_ref}/budgets:
+    get:
+      operationId: listWorkspaceBudgets
+      summary: List workspace budgets
+      tags:
+      - workspace_budgets
+  /workspaces/{workspace_ref}/budgets/{interval}:
+    get:
+      operationId: getWorkspaceBudget
+      summary: Get a workspace budget
+      tags:
+      - workspace_budget
+  /organization/members:
+    get:
+      operationId: listOrganizationMembers
+      summary: List organization members
+      tags:
+      - org_members
+  /organization/settings:
+    get:
+      operationId: getOrganizationSettings
+      summary: Get organization settings
+      tags:
+      - org_settings
+    patch:
+      operationId: updateOrganizationSettings
+      summary: Update organization settings
+      tags:
+      - org_settings_update
+  /external-users:
+    get:
+      operationId: listExternalUsers
+      summary: List registered external users
+      tags:
+      - external_users_list
+    post:
+      operationId: createExternalUser
+      summary: Register an external user
+      tags:
+      - external_users_create
+  /external-users/{user}:
+    get:
+      operationId: getExternalUser
+      summary: Get a registered external user
+      tags:
+      - external_user_get
+  /guardrails:
+    get:
+      operationId: listGuardrails
+      summary: List guardrails
+      tags:
+      - guardrails_list
+    post:
+      operationId: createGuardrail
+      summary: Create a guardrail
+      tags:
+      - guardrails_create
+  /guardrails/{id}:
+    get:
+      operationId: getGuardrail
+      summary: Get a guardrail
+      tags:
+      - guardrail_get
+    patch:
+      operationId: updateGuardrail
+      summary: Update a guardrail
+      tags:
+      - guardrail_update
+    delete:
+      operationId: deleteGuardrail
+      summary: Delete a guardrail
+      tags:
+      - guardrail_delete
+  /observability/destinations:
+    get:
+      operationId: listObservabilityDestinations
+      summary: List observability destinations
+      tags:
+      - observability_list
+    post:
+      operationId: createObservabilityDestination
+      summary: Create an observability destination
+      tags:
+      - observability_create
+  /observability/destinations/{id}:
+    delete:
+      operationId: deleteObservabilityDestination
+      summary: Delete an observability destination
+      tags:
+      - observability_delete
+  /private-endpoints:
+    get:
+      operationId: listPrivateEndpoints
+      summary: List private endpoints
+      tags:
+      - private_endpoints_list
+    post:
+      operationId: createPrivateEndpoint
+      summary: Create a private endpoint
+      tags:
+      - private_endpoints_create
+  /private-endpoints/{id}:
+    delete:
+      operationId: deletePrivateEndpoint
+      summary: Delete a private endpoint
+      tags:
+      - private_endpoint_delete
+  /private-providers:
+    get:
+      operationId: listPrivateProviders
+      summary: List private providers
+      tags:
+      - private_providers_list
+    post:
+      operationId: createPrivateProvider
+      summary: Create a private provider
+      tags:
+      - private_providers_create
+  /private-providers/{slug}:
+    delete:
+      operationId: deletePrivateProvider
+      summary: Delete a private provider
+      tags:
+      - private_provider_delete
+  /containers/{container_id}/files:
+    get:
+      operationId: listContainerFiles
+      summary: List container files
+      tags:
+      - container_files_list
+  /containers/{container_id}/files/{file_id}:
+    get:
+      operationId: getContainerFile
+      summary: Retrieve a container file
+      tags:
+      - container_file_get
+  /containers/{container_id}/files/{file_id}/content:
+    get:
+      operationId: downloadContainerFileContent
+      summary: Download container file content
+      tags:
+      - container_file_content
+  /containers/{container_id}/files/{file_id}/promote:
+    post:
+      operationId: promoteContainerFile
+      summary: Promote a container file into workspace documents
+      tags:
+      - container_file_promote
+  /api/alpha/decisions:
+    post:
+      operationId: createApiAlphaDecisions
+      summary: Submit a Decisions request
+      tags:
+      - alpha_decisions
+  /api/alpha/extractions:
+    post:
+      operationId: createApiAlphaExtractions
+      summary: Submit an Extractions request
+      tags:
+      - alpha_extractions
+  /private-endpoints/{id}/activate:
+    post:
+      operationId: activatePrivateEndpoint
+      summary: Activate a validated private endpoint
+      tags:
+      - private_endpoint_action
+  /private-endpoints/{id}/disable:
+    post:
+      operationId: disablePrivateEndpoint
+      summary: Disable a private endpoint
+      tags:
+      - private_endpoint_action
+  /private-endpoints/{id}/enable:
+    post:
+      operationId: enablePrivateEndpoint
+      summary: Enable a private endpoint
+      tags:
+      - private_endpoint_action
+  /private-endpoints/{id}/validate:
+    post:
+      operationId: validatePrivateEndpoint
+      summary: Validate a draft private endpoint
+      tags:
+      - private_endpoint_action

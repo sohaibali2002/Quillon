@@ -31,6 +31,22 @@ write in a plain app, with an inspectable surface for every capability.
   OpenAI-compatible protocol: Ollama, LM Studio, vLLM, llama.cpp.
 - **Enterprise** — Entra ID / any-OIDC SSO, 41 connectors with AES-256-GCM
   token storage, agent memory, auto-compaction, skills and MCP.
+- **Deep ERP/CRM integrations** — native `sf_*` (Salesforce), `hs_*` (HubSpot)
+  and `ns_*` (NetSuite SuiteTalk REST) toolsets with their own OpenAPI
+  contracts (`salesforce.openapi.yaml`, `hubspot.openapi.yaml`,
+  `netsuite.openapi.yaml`); the NetSuite connector takes Token-Based
+  Authentication credentials as
+  `accountId|consumerKey|consumerSecret|tokenId|tokenSecret`.
+- **Deep Deltek Costpoint integration** — native `cp_*` tools
+  (`costpoint.openapi.yaml`): OData v4 queries with automatic `$skip` paging
+  (10k-row cap), record CRUD on any entity with `If-Match` ETags, batch upserts
+  (<=100, per-record results), the `$metadata` catalog, labor actual posting,
+  and one-call project / AP-voucher snapshots that chain header, detail and
+  organization/vendor reads. Costpoint Cloud auth is OAuth2 (password grant
+  with a registered API client) — store
+  `baseUrl|clientId|clientSecret|username|password` on the costpoint connector;
+  on-prem static API keys use `baseUrl|apiKey` (sent as `X-Api-Key`). Check
+  with `npm run check:costpoint` (mock Costpoint server, no live environment).
 
 ### Governance and reliability
 
@@ -73,15 +89,15 @@ npm install
 npm run dev        # http://localhost:3000
 ```
 
-It starts in **mock mode** — every surface is live before you add a key.
+Set one key and every surface streams real tokens.
 
-### One key (or none)
+### One key
 
 ```bash
 AI_GATEWAY_API_KEY=...     # or OPENAI_API_KEY / ANTHROPIC_API_KEY / OPENROUTER_API_KEY
 ```
 
-### Fully local, zero keys
+### Fully local, zero cloud keys
 
 ```bash
 ollama serve && ollama pull llama3.1
@@ -115,6 +131,53 @@ check, what is missing and the exact env var or command to fix it.
 Native AI SDK provider packages, keyed by env var: OpenAI, Anthropic, Google,
 xAI, Mistral, Groq, DeepSeek, Perplexity, Amazon Bedrock, Azure, OpenRouter,
 plus `ollama/*` and `local/*` for self-hosted models.
+
+### OpenRouter deep integration
+
+`src/lib/openrouter.ts` wires the full official OpenRouter API surface
+(`openrouter.openapi.yaml`, trimmed from the published spec) as 37 `or_*`
+tools in the unified registry whenever `OPENROUTER_API_KEY` is set:
+
+- **Inference** — chat completions with model fallbacks, provider routing
+  (`provider.order`, `allow_fallbacks`), JSON mode and usage accounting; the
+  OpenAI-style Responses API; the Anthropic-style Messages API; running a
+  saved preset (`/presets/{slug}/chat/completions`); the embeddings router;
+  the rerank router; audio transcription (multipart); text-to-speech
+  (returned as a playable data URL); image generation; video generation with
+  job polling and content download; alpha decisions/extractions.
+- **Catalog** — model search with free/modality filters, per-model detail
+  (`/model/{author}/{slug}`), upstream provider endpoints
+  (per-provider pricing and uptime), speech/embedding/image/video model
+  lists, `/models/count`, `/models/user`, providers, tool definitions,
+  benchmarks and task classifications.
+- **Accounting** — credit balance, purchase history, per-generation cost
+  lookup (`/generation?id=` — note: OpenRouter indexes generations
+  asynchronously, so a fresh id can 404 briefly), usage activity, the
+  analytics meta/query API, per-generation feedback and the generated-content
+  list.
+- **Key management** — provisioning key list/create/update/delete with spend
+  limits and expiry (management key), and BYOK provider keys
+  (list/add/delete) to route through your own upstream accounts.
+- **Enterprise management** (management key) — workspaces (CRUD, bulk member
+  add, budgets by interval), organization members and settings, external
+  users, guardrails (CRUD), observability/OTel destinations, private
+  endpoints (create plus activate/disable/enable/validate) and private
+  providers.
+- **Bulk** — file upload (multipart), metadata, content download and delete;
+  batch jobs create/status/cancel; code-container file list/read/download/
+  promote.
+- **Escape hatch** — with `OR_ALLOW_RAW=1`, an `or_request` tool exposes any
+  authenticated path; off by default.
+
+Transport details: `HTTP-Referer` + `X-Title` attribution headers on every
+call, bearer auth from `OPENROUTER_API_KEY`, one retry on 429/502/503
+honoring `Retry-After` (never on ambiguous inference failures), 300s
+inference / 60s metadata timeouts, and `{error:{code,message}}` bodies
+surfaced to the model. Optional overrides: `OPENROUTER_BASE_URL`,
+`OPENROUTER_APP_NAME`, `APP_URL`.
+
+Verify: `npm run check:openrouter` (mock-server behaviour suite, 147
+assertions, + contract pin of all 93 operations against the official spec).
 
 ## Architecture
 

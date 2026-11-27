@@ -14,6 +14,9 @@ export type AnswerMetadata = {
   outputTokens?: number | null;
   finishReason?: string;
   compacted?: number;
+  // MCP servers that failed to answer this turn, surfaced so the UI can say a
+  // connector is down instead of failing silently.
+  mcpErrors?: { server: string; message: string }[];
 };
 
 export type ChatMessage = UIMessage<AnswerMetadata, never, ChatTools>;

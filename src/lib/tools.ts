@@ -4,47 +4,6 @@ import { z } from "zod";
 import { runCode } from "@/lib/sandbox";
 import { searchConnectorTool } from "@/lib/connector-tools";
 
-export const weatherTool = tool({
-  description: "Get the current weather for a location (Fahrenheit)",
-  inputSchema: z.object({
-    location: z.string().describe("City name, e.g. 'San Francisco'"),
-  }),
-  // Demo tool with scripted output: deterministic per location so responses
-  // are stable and reproducible. Replace with a real weather API in production.
-  execute: async ({ location }) => {
-    let hash = 0;
-    for (let i = 0; i < location.length; i++) {
-      hash = (hash * 31 + location.charCodeAt(i)) % 1000;
-    }
-    return {
-      location,
-      temperatureF: 45 + (hash % 40),
-      condition: ["sunny", "cloudy", "rainy", "windy"][hash % 4],
-    };
-  },
-});
-
-export const convertTemperatureTool = tool({
-  description: "Convert a temperature from Fahrenheit to Celsius",
-  inputSchema: z.object({
-    temperatureF: z.number().describe("Temperature in Fahrenheit"),
-  }),
-  execute: async ({ temperatureF }) => ({
-    celsius: Math.round(((temperatureF - 32) * 5) / 9),
-  }),
-});
-
-export const getTimeTool = tool({
-  description: "Get the current date and time for a city",
-  inputSchema: z.object({
-    city: z.string().describe("City name, e.g. 'Tokyo'"),
-  }),
-  execute: async ({ city }) => ({
-    city,
-    timeIso: new Date().toISOString(),
-  }),
-});
-
 export const runCodeTool = tool({
   description:
     "Execute code in a sandboxed temp directory. Languages: " +
@@ -117,11 +76,10 @@ export const makeDocumentTool = tool({
 });
 
 export const platformTools = {
-  weather: weatherTool,
-  convertTemperature: convertTemperatureTool,
-  getTime: getTimeTool,
   runCode: runCodeTool,
   makeDocument: makeDocumentTool,
   searchConnector: searchConnectorTool,
 };
+
+export const builtinTools = platformTools;
 

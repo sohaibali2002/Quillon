@@ -1,0 +1,239 @@
+openapi: 3.1.0
+info:
+  title: Quillon Costpoint integration contract
+  version: 1.0.0
+  description: >
+    Contract for the cp_* native tools Quillon exposes to the model once a
+    Costpoint environment is connected. Each operation lists the Costpoint REST
+    endpoint it calls (https://help.deltek.com/product/costpoint/documentation/
+    Costpoint_81_Developer_Resources.html — Costpoint REST API, OData v4
+    conventions). Every operationId must match an entry of CP_TOOLS in
+    src/lib/costpoint.ts — pinned by scripts/check-costpoint-contract.mjs.
+servers:
+  - url: https://{env}/api/v1
+    variables:
+      env:
+        default: your-env.costpointcloud.com
+        description: Costpoint environment host
+security:
+  - oauth2Bearer: []
+  - apiKeyHeader: []
+tags:
+  - name: query
+  - name: records
+  - name: metadata
+  - name: labor
+  - name: snapshots
+paths:
+  /{entity}:
+    get:
+      tags: [query]
+      operationId: cp_query
+      summary: OData query with automatic $skip paging ($top per page <= 200, cap 10,000 rows)
+      parameters:
+        - { name: entity, in: path, required: true, schema: { type: string } }
+        - { name: $filter, in: query, schema: { type: string } }
+        - { name: $select, in: query, schema: { type: string } }
+        - { name: $orderby, in: query, schema: { type: string } }
+        - { name: $top, in: query, schema: { type: integer, maximum: 200 } }
+        - { name: $skip, in: query, schema: { type: integer } }
+      responses:
+        "200":
+          description: Paged results (value, fetched, truncated)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Page" }
+        "4xx": { $ref: "#/components/responses/CpError" }
+        "429": { description: Rate limited; retried once honoring Retry-After }
+    post:
+      tags: [records]
+      operationId: cp_create_record
+      summary: Create one record
+      parameters:
+        - { name: entity, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Fields" }
+      responses:
+        "201":
+          description: Created; body holds the new record
+          content:
+            application/json:
+              schema: { type: object }
+        "4xx": { $ref: "#/components/responses/CpError" }
+  /{entity}({key}):
+    get:
+      tags: [records]
+      operationId: cp_get_record
+      summary: Read one record; the response ETag is returned for conditional writes
+      parameters:
+        - { name: entity, in: path, required: true, schema: { type: string } }
+        - { name: key, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: The record, with ETag header }
+        "404": { $ref: "#/components/responses/CpError" }
+    patch:
+      tags: [records]
+      operationId: cp_update_record
+      summary: Patch one record (If-Match ETag)
+      parameters:
+        - { name: entity, in: path, required: true, schema: { type: string } }
+        - { name: key, in: path, required: true, schema: { type: string } }
+        - { name: If-Match, in: header, schema: { type: string, default: "*" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Fields" }
+      responses:
+        "204": { description: Updated }
+        "409": { description: ETag mismatch (optimistic concurrency) }
+        "4xx": { $ref: "#/components/responses/CpError" }
+    delete:
+      tags: [records]
+      operationId: cp_delete_record
+      summary: Delete one record (If-Match ETag)
+      parameters:
+        - { name: entity, in: path, required: true, schema: { type: string } }
+        - { name: key, in: path, required: true, schema: { type: string } }
+        - { name: If-Match, in: header, schema: { type: string, default: "*" } }
+      responses:
+        "204": { description: Deleted }
+        "4xx": { $ref: "#/components/responses/CpError" }
+  /{entity}({key})/$batch:
+    patch:
+      tags: [records]
+      operationId: cp_batch_upsert
+      summary: Up to 100 sequential patches with per-record results; one failure never stops the batch
+      parameters:
+        - { name: entity, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                records:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: object
+                    properties:
+                      key: { type: string }
+                      fields: { $ref: "#/components/schemas/Fields" }
+      responses:
+        "200":
+          description: "{ ok, results[{key, ok, error?}], total, failed }"
+          content:
+            application/json:
+              schema: { type: object }
+        "4xx": { $ref: "#/components/responses/CpError" }
+  /$metadata:
+    get:
+      tags: [metadata]
+      operationId: cp_metadata
+      summary: OData metadata catalog (optionally one entity via $metadata#Entity)
+      parameters:
+        - { name: entity, in: query, schema: { type: string }, description: Optional entity selector }
+      responses:
+        "200":
+          description: EDMX XML catalog
+          content:
+            application/xml:
+              schema: { type: string }
+        "4xx": { $ref: "#/components/responses/CpError" }
+  /LABOR_ACTUALS:
+    post:
+      tags: [labor]
+      operationId: cp_labor_entries
+      summary: Post labor actual lines (one POST per line, per-line results)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [EMPE_ID, PROJECT_ID, WORK_DT, HOURS]
+              properties:
+                EMPE_ID: { type: string, description: Employee ID }
+                PROJECT_ID: { type: string, description: Project/WBS1 charge code }
+                WBS2_ID: { type: string }
+                WBS3_ID: { type: string }
+                WORK_DT: { type: string, format: date }
+                HOURS: { type: number }
+                TS_PERIOD: { type: string, description: Timesheet period code }
+      responses:
+        "201": { description: Line posted }
+        "4xx": { $ref: "#/components/responses/CpError" }
+  /PROJECT({key}):
+    get:
+      tags: [snapshots]
+      operationId: cp_project_snapshot
+      summary: One-call project view — PROJECT header, PROJECT_BUDGETS lines, ORGANIZATION
+      parameters:
+        - { name: key, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: "{ ok, project, etag, budgets[], organization }"
+          content:
+            application/json:
+              schema: { type: object }
+        "404": { $ref: "#/components/responses/CpError" }
+  /VOUCHER_HDR({key}):
+    get:
+      tags: [snapshots]
+      operationId: cp_voucher_snapshot
+      summary: One-call AP voucher view — VOUCHER_HDR, VOUCHER_DETL lines, VENDOR
+      parameters:
+        - { name: key, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: "{ ok, voucher, etag, lines[], vendor }"
+          content:
+            application/json:
+              schema: { type: object }
+        "404": { $ref: "#/components/responses/CpError" }
+components:
+  schemas:
+    Page:
+      type: object
+      properties:
+        value: { type: array, items: { type: object } }
+        fetched: { type: integer }
+        truncated: { type: boolean }
+    Fields:
+      type: object
+      additionalProperties: true
+      description: Entity fields in Costpoint JSON shape
+  responses:
+    CpError:
+      description: Costpoint/OData error body {error:{code, message}}
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: object
+                properties:
+                  code: { type: string }
+                  message:
+                    oneOf:
+                      - { type: string }
+                      - type: object
+                        properties:
+                          lang: { type: string }
+                          value: { type: string }
+  securitySchemes:
+    oauth2Bearer:
+      type: http
+      scheme: bearer
+      description: OAuth2 password grant from {baseUrl}/api/oauth2/token (client_id + client_secret + user credentials)
+    apiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: Static API key for on-prem deployments

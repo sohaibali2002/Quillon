@@ -27,16 +27,13 @@ function toFileUIPart(file: File): Promise<FileUIPart> {
 }
 
 const starters = [
-  "What is the weather in Lisbon?",
-  "Convert 21 degrees Celsius to Fahrenheit.",
-  "What time is it in Tokyo right now?",
   "Run a Python snippet that sums the numbers 1 to 10.",
+  "Create an Excel workbook of monthly revenue by region.",
+  "Search GitHub for open issues about rate limits.",
+  "Summarize the text I attach in three bullet points.",
 ];
 
 const toolNames: Record<string, string> = {
-  weather: "Weather lookup",
-  convertTemperature: "Temperature conversion",
-  getTime: "World clock",
   runCode: "Sandbox run",
   remember: "Saved to memory",
   recall: "Memory search",

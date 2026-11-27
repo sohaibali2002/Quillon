@@ -18,3 +18,9 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm run build
       - run: node tests/smoke.mjs
+      - run: npm run check:salesforce
+      - run: npm run check:hubspot
+      - run: npm run check:netsuite
+      - run: npm run check:costpoint
+      - run: npm run check:openrouter
+      - run: npm run check:orchestration

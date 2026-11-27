@@ -5,7 +5,7 @@ services:
       - "3000:3000"
     environment:
       - DATABASE_PATH=/data/quillon.db
-      # Model: set one of these, or run with none for mock mode.
+      # Model: set one of these (AI_GATEWAY_API_KEY or a native provider key).
       - AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

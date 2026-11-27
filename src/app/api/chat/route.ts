@@ -13,17 +13,36 @@ import {
 } from "ai";
 import { z } from "zod";
 import type { AnswerMetadata } from "@/lib/ai-types";
+import { resolveAttachmentsForModel } from "@/lib/attachments";
 import { compactIfNeeded, compactionContext } from "@/lib/compaction";
-import { createMemoryTools, memoryContext } from "@/lib/memory";
-import { mcpToolset } from "@/lib/mcp";
+import { memoryContext } from "@/lib/memory";
 import { listProviders, resolveModelAny } from "@/lib/models";
 import { skillsContext } from "@/lib/skills";
-import { platformTools } from "@/lib/tools";
-import { ENTERPRISE_RECIPES } from "@/lib/enterprise-platforms";
-import { buildConnectedTools } from "@/lib/connector-sdk";
+import { unifiedToolset } from "@/lib/tool-registry";
+import { createOrchestrateTool } from "@/lib/orchestrator";
+import { enforceCapabilities, selectRelevantTools, withToolTimeouts } from "@/lib/tool-policy";
 
 import { guard } from "@/lib/guard";
 export const maxDuration = 30;
+
+// Parts are validated by shape: known types pass through, anything else is
+// rejected. File parts must reference an uploaded id or a small inline data URL
+// (limits enforced by lib/attachments).
+const partSchema = z.union([
+  z.object({ type: z.literal("text"), text: z.string() }),
+  z.object({
+    type: z.literal("file"),
+    mediaType: z.string().min(1).max(120),
+    filename: z.string().max(300).optional(),
+    url: z.string().min(1).max(64 * 1024 * 1024),
+  }),
+  z.object({ type: z.literal("reasoning"), text: z.string() }),
+  z.object({ type: z.literal("source-url"), sourceId: z.string(), url: z.string() }),
+  z.object({ type: z.literal("step-start") }),
+  // Tool and data parts carry many shapes; their type prefix is the contract.
+  z.object({ type: z.string().startsWith("data-") }).passthrough(),
+  z.object({ type: z.string().startsWith("tool-") }).passthrough(),
+]);
 
 const bodySchema = z.object({
   messages: z
@@ -31,14 +50,19 @@ const bodySchema = z.object({
       z.object({
         id: z.string().min(1),
         role: z.enum(["system", "user", "assistant"]),
-        parts: z.array(z.record(z.string(), z.unknown())),
+        parts: z.array(partSchema).max(200),
       }),
     )
     .min(1),
   model: z.string().optional(),
   conversationId: z.string().trim().min(1).max(200).default("default"),
   skills: z.array(z.string().min(1).max(80)).max(20).optional(),
+  // Per-request step budget; the route default stays 8, callers can raise or
+  // lower it while the loop stops on its own when the model is done.
+  maxSteps: z.number().int().min(1).max(24).optional(),
 });
+
+const DEFAULT_MAX_STEPS = 8;
 
 export async function POST(req: Request) {
   const denied = await secure(req);
@@ -70,21 +94,33 @@ export async function POST(req: Request) {
     );
   }
 
-  const { messages, model, conversationId, skills } = parsed.data;
+  const { messages, model, conversationId, skills, maxSteps } = parsed.data;
+
+  // Attachments: validate every file part and give the model real bytes only
+  // for this turn's files; older turns become text placeholders.
+  let resolved: { messages: UIMessage[] };
+  try {
+    resolved = await resolveAttachmentsForModel(messages as UIMessage[]);
+  } catch (error) {
+    return Response.json(
+      { error: { message: error instanceof Error ? error.message : "Invalid attachment." } },
+      { status: 400 },
+    );
+  }
 
   // Auto compaction: if the thread outgrew the budget, older turns are folded
   // into a persisted summary and only recent turns are sent verbatim.
   const { result: compaction, keptMessages } = await compactIfNeeded(
     conversationId,
-    messages as UIMessage[],
+    resolved.messages,
     model,
   );
 
-  // MCP: live tools from every enabled server; a dead server becomes an
-  // error entry, never a failed chat turn.
-  const mcp = await mcpToolset();
-  if (mcp.errors.length > 0) {
-    console.error("mcp toolset errors:", JSON.stringify(mcp.errors));
+  // One registry for every tool surface; a dead MCP server becomes an error
+  // entry, never a failed chat turn.
+  const unified = await unifiedToolset(conversationId);
+  if (unified.mcpErrors.length > 0) {
+    console.error("mcp toolset errors:", JSON.stringify(unified.mcpErrors));
   }
 
   const system = [
@@ -96,26 +132,49 @@ export async function POST(req: Request) {
     .filter(Boolean)
     .join("\n\n");
 
+  const lastUserText =
+    [...keptMessages]
+      .reverse()
+      .find((m) => m.role === "user")
+      ?.parts.map((p) => (p.type === "text" ? p.text : p.type === "file" ? p.filename ?? "" : ""))
+      .join(" ") ?? "";
+
+  // Policy: capability grants, relevance shortlist, then one timeout per call.
+  const toolset = {
+    ...unified.tools,
+    // Cross-platform pipelines: the model can delegate a whole multi-tool
+    // job (fetch → enrich → document) to the orchestrator in one call.
+    orchestrate: createOrchestrateTool(model),
+  };
+  const tools = withToolTimeouts(
+    selectRelevantTools(
+      enforceCapabilities(toolset, unified.catalog, conversationId),
+      unified.catalog,
+      lastUserText,
+    ),
+  );
+
   const result = streamText({
     model: await resolveModelAny(model),
     system,
-    tools: { ...platformTools, ...buildConnectedTools(ENTERPRISE_RECIPES), ...createMemoryTools(conversationId), ...mcp.tools },
+    tools,
     messages: await convertToModelMessages(keptMessages),
     // Multi-step loop: tool results are fed back so the model can answer.
-    stopWhen: stepCountIs(8),
+    stopWhen: stepCountIs(maxSteps ?? DEFAULT_MAX_STEPS),
     abortSignal: req.signal,
-    onError({ error }) {
+    onError({ error }: { error: unknown }) {
       console.error("chat stream error:", error);
     },
   });
 
   const startedAt = Date.now();
+  const metadataErrors = unified.mcpErrors.length > 0 ? unified.mcpErrors : undefined;
   return createUIMessageStreamResponse({
     stream: result.toUIMessageStream({
       // Provider-native citations (web search, grounding) stream as source parts.
       sendSources: true,
       messageMetadata: ({ part }): AnswerMetadata | undefined => {
-        if (part.type === "start") return { model: model ?? null, startedAt };
+        if (part.type === "start") return { model: model ?? null, startedAt, mcpErrors: metadataErrors };
         if (part.type === "finish") {
           return {
             model: model ?? null,
@@ -125,6 +184,7 @@ export async function POST(req: Request) {
             outputTokens: part.totalUsage.outputTokens ?? null,
             finishReason: part.finishReason,
             compacted: compaction?.compactedCount ?? 0,
+            mcpErrors: metadataErrors,
           };
         }
         return undefined;

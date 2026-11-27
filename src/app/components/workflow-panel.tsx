@@ -28,7 +28,7 @@ type WorkflowMessage = UIMessage<
 const MAX_TASKS = 5;
 
 const DEFAULT_PROMPT =
-  "Plan a small trip to Tokyo: check the weather, convert 75F to Celsius, and tell me the local time.";
+  "Run code that prints 6*7, then summarize the output in one sentence.";
 
 const KIND_TONE: Record<PlanPart["tasks"][number]["kind"], Tone> = {
   research: "run",
