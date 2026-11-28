@@ -9,6 +9,7 @@ import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readCredential, readToken } from "@/lib/connectors";
 import { safeErrorMessage } from "@/lib/sanitize";
+import { toolFetchSignal } from "@/lib/tool-signal";
 
 export type ParamType = "string" | "number" | "boolean";
 
@@ -148,7 +149,9 @@ export function buildPlatformTools(recipe: PlatformRecipe): Record<string, Tool>
               ...(hasBody ? { "content-type": formEncoded ? "application/x-www-form-urlencoded" : "application/json" } : {}),
             },
             body: bodyPayload,
-            signal: AbortSignal.timeout(15_000),
+            // The caller's tool-call signal: a timeout or a cancelled turn
+            // aborts this request instead of leaving a write running.
+            signal: toolFetchSignal(15_000),
           });
           if (res.status === 429) {
             const retryAfter = res.headers.get("retry-after");

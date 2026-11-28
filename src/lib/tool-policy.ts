@@ -1,11 +1,16 @@
 // Tool policy applied at the route boundary, before tools reach the model:
-// per-call timeouts (one hung provider call must not strand the whole stream),
+// per-call timeouts that really cancel the work (one hung provider call must not
+// strand the stream, and a timed-out write must not keep running behind it),
 // capability grants for connector actions (the model never authorizes itself),
-// and a relevance shortlist so a 300-tool registry does not cost prompt tokens
-// and selection accuracy on every turn.
+// record-level restrictions for ERP/CRM writes, and a relevance shortlist so a
+// 300-tool registry does not cost prompt tokens on every turn.
 import type { Tool, ToolSet } from "ai";
 import { checkCapability } from "@/lib/capability";
 import { redactDeep, safeErrorMessage } from "@/lib/sanitize";
+import { withToolSignal } from "@/lib/tool-signal";
+import { toolVerdict } from "@/lib/tool-authority";
+import { recordPolicyReason } from "@/lib/record-policy";
+import type { Role } from "@/lib/rbac";
 import type { ToolCatalogEntry } from "@/lib/tool-registry";
 
 export const TOOL_TIMEOUT_MS = 30_000;
@@ -16,6 +21,8 @@ const CORE_TOOLS = new Set([
   "makeDocument",
   "searchConnector",
   "orchestrate",
+  "remember",
+  "recall",
   "memory_save",
   "memory_read",
   "memory_list",
@@ -26,6 +33,10 @@ type ExecutingTool = Tool & { execute?: (input: never, options: never) => unknow
 
 // One uniform timeout per tool execution, with an error the model can read and
 // recover from, instead of the stream hanging on a provider that never answers.
+// The timeout aborts the call's signal (connector fetches honour it), so the
+// outbound request stops instead of finishing behind the model's back; a write
+// that timed out is still reported as "outcome unknown" so the model re-reads
+// the record before retrying.
 export function withToolTimeouts(tools: ToolSet, timeoutMs = TOOL_TIMEOUT_MS): ToolSet {
   const out: ToolSet = {};
   for (const [name, impl] of Object.entries(tools)) {
@@ -35,19 +46,29 @@ export function withToolTimeouts(tools: ToolSet, timeoutMs = TOOL_TIMEOUT_MS): T
       continue;
     }
     const execute = executing.execute.bind(executing);
+    const writes = toolVerdict(name).class !== "read";
     out[name] = {
       ...executing,
       execute: async (input: never, options: never) => {
+        const controller = new AbortController();
         let timer: ReturnType<typeof setTimeout> | undefined;
+        const timedOut = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort(new Error(`Tool "${name}" timed out.`));
+            reject(
+              new Error(
+                writes
+                  ? `Tool "${name}" timed out after ${timeoutMs / 1000}s. The request was cancelled, but the remote system may already have applied it: read the record back before retrying rather than repeating the write.`
+                  : `Tool "${name}" timed out after ${timeoutMs / 1000}s and the request was cancelled.`,
+              ),
+            );
+          }, timeoutMs);
+        });
+        const callOptions = { ...(options as Record<string, unknown> | undefined), abortSignal: controller.signal };
         try {
           const result = await Promise.race([
-            execute(input, options),
-            new Promise((_, reject) => {
-              timer = setTimeout(
-                () => reject(new Error(`Tool "${name}" timed out after ${timeoutMs / 1000}s.`)),
-                timeoutMs,
-              );
-            }),
+            withToolSignal(controller.signal, () => execute(input, callOptions as never)),
+            timedOut,
           ]);
           // Tool output is attacker-adjacent (third-party API bodies, file
           // contents) and goes straight into the model context: scrub any
@@ -67,16 +88,32 @@ export function withToolTimeouts(tools: ToolSet, timeoutMs = TOOL_TIMEOUT_MS): T
   return out;
 }
 
-// Strict capability enforcement is opt-in: when QUILLON_REQUIRE_GRANTS=1 every
-// connector-backed tool call must hold an unexpired grant for
-// `connector:action` under the subject (the conversation id by default).
-// Without the flag the platform keeps its historical open-loop behaviour.
+export type CapabilityRequest = {
+  /** Authenticated subject: organization and user id, never a conversation id. */
+  subject: string;
+  role: Role;
+};
+
+/**
+ * Grants are mandatory for every non-administrator session, and for everyone
+ * when QUILLON_REQUIRE_GRANTS=1. An administrator already holds the whole
+ * platform, so requiring them to grant themselves a capability only trains
+ * people to disable the check; a member never gets a connector action without
+ * an explicit, expiring, per-`connector:action` grant.
+ */
+export function capabilitiesRequired(role: Role): boolean {
+  const flag = process.env.QUILLON_REQUIRE_GRANTS;
+  if (flag === "0") return false;
+  if (flag === "1") return true;
+  return role !== "admin";
+}
+
 export function enforceCapabilities(
   tools: ToolSet,
   catalog: ToolCatalogEntry[],
-  subject: string,
+  request: CapabilityRequest,
 ): ToolSet {
-  if (process.env.QUILLON_REQUIRE_GRANTS !== "1") return tools;
+  if (!capabilitiesRequired(request.role)) return tools;
   const requirements = new Map(
     catalog.filter((c) => c.connector).map((c) => [c.name, c] as const),
   );
@@ -93,11 +130,47 @@ export function enforceCapabilities(
       ...executing,
       execute: async (input: never, options: never) => {
         const check = checkCapability(
-          subject,
+          request.subject,
           requirement.connector!,
           requirement.action ?? name,
         );
         if (!check.ok) throw new Error(`Capability denied: ${check.reason}`);
+        return execute(input, options);
+      },
+    } as unknown as ToolSet[string];
+  }
+  return out;
+}
+
+/**
+ * Refuses ERP/CRM writes that touch restricted record types or fields for
+ * anyone below administrator. Reads pass straight through.
+ */
+export function withRecordPolicy(
+  tools: ToolSet,
+  catalog: ToolCatalogEntry[],
+  role: Role,
+): ToolSet {
+  if (role === "admin") return tools;
+  const requirements = new Map(catalog.map((c) => [c.name, c] as const));
+  const out: ToolSet = {};
+  for (const [name, impl] of Object.entries(tools)) {
+    const entry = requirements.get(name);
+    const executing = impl as ExecutingTool;
+    if (!entry?.connector || typeof executing.execute !== "function") {
+      out[name] = impl;
+      continue;
+    }
+    if (toolVerdict(name).class === "read") {
+      out[name] = impl;
+      continue;
+    }
+    const execute = executing.execute.bind(executing);
+    out[name] = {
+      ...executing,
+      execute: async (input: never, options: never) => {
+        const reason = recordPolicyReason(entry.connector, entry.action ?? name, input, role);
+        if (reason) throw new Error(`Record policy denied: ${reason}`);
         return execute(input, options);
       },
     } as unknown as ToolSet[string];

@@ -196,6 +196,186 @@ await check("orgForSession is stable per subject and never blank", () => {
   assert.equal(typeof rbac.orgForSession({ sub: "user-a" }), "string");
 });
 
+// ---------- permission manifest, capability, timeouts, egress, audit ----------
+// These load modules that reach the database; point it at a throwaway file first
+// so the checks never touch the developer's .data/quillon.db.
+const tmpDir = await import("node:fs").then((fs) => fs.mkdtempSync("/tmp/quillon-check-"));
+process.env.DATABASE_PATH = `${tmpDir}/check.db`;
+process.env.QUILLON_AUDIT_KEY = "check-suite-signing-key-0001";
+const manifest = await import("../src/lib/tool-manifest.ts");
+const policy = await import("../src/lib/tool-policy.ts");
+const records = await import("../src/lib/record-policy.ts");
+const checkpoints = await import("../src/lib/audit-checkpoint.ts");
+const dbModule = await import("../src/lib/db.ts");
+
+await check("every declared connector tool has an explicit permission class", async () => {
+  const sources = await Promise.all([
+    import("../src/lib/salesforce.ts"),
+    import("../src/lib/hubspot.ts"),
+    import("../src/lib/netsuite.ts"),
+    import("../src/lib/costpoint.ts"),
+    import("../src/lib/openrouter.ts"),
+    import("../src/lib/enterprise-platforms.ts"),
+  ]);
+  const [sf, hs, ns, cp, or, ent] = sources;
+  const declared = [
+    ...sf.SF_TOOLS.map((t) => `sf_${t.name}`),
+    ...hs.HS_TOOLS.map((t) => `hs_${t.name}`),
+    ...ns.NS_TOOLS.map((t) => `ns_${t.name}`),
+    ...cp.CP_TOOLS.map((t) => `cp_${t.name}`),
+    ...or.OR_TOOLS.map((t) => `or_${t.name}`),
+    ...ent.ENTERPRISE_RECIPES.flatMap((r) => r.actions.map((a) => `ent_${r.id}_${a.id}`)),
+  ];
+  const missing = declared.filter((name) => !(name in manifest.TOOL_CLASSES));
+  assert.deepEqual(missing, [], `unclassified tools: ${missing.slice(0, 5).join(", ")}`);
+  assert.ok(declared.length > 300, `expected the full connector surface, saw ${declared.length}`);
+});
+
+await check("administrative OpenRouter operations are not ordinary writes", () => {
+  for (const name of [
+    "or_external_users_create",
+    "or_private_endpoints_create",
+    "or_private_providers_create",
+    "or_request",
+  ]) {
+    assert.equal(manifest.TOOL_CLASSES[name], "admin", `${name} must be administrator-only`);
+    assert.notEqual(authority.toolAuthorityReason(name, "member"), null, `${name} must be denied to a member`);
+  }
+});
+
+await check("a tool outside the manifest is denied to every role", () => {
+  // Default deny: a new integration must be declared before the model can call it.
+  assert.notEqual(authority.toolAuthorityReason("totally_new_tool", "admin"), null);
+  assert.notEqual(authority.toolAuthorityReason("totally_new_tool", "member"), null);
+  assert.equal(authority.classifyTool("totally_new_tool"), "admin");
+  // Dynamic MCP tools are admin-only unless the operator names the server.
+  assert.notEqual(authority.toolAuthorityReason("mcp_home_files_read", "member"), null);
+  process.env.QUILLON_MCP_MEMBER_SERVERS = "home files";
+  assert.equal(authority.toolAuthorityReason("mcp_home_files_read", "member"), null);
+  assert.notEqual(authority.toolAuthorityReason("mcp_other_server_read", "member"), null);
+  delete process.env.QUILLON_MCP_MEMBER_SERVERS;
+});
+
+await check("role filtering keeps viewers read-only and members off admin tools", () => {
+  delete process.env.QUILLON_TOOL_DENY;
+  const tools = {
+    or_chat: { description: "read" },
+    ns_create_record: { description: "write" },
+    cp_delete_record: { description: "destructive" },
+    or_keys_list: { description: "admin" },
+    mc_unknown: { description: "unlisted" },
+  };
+  assert.deepEqual(authority.allowedToolNames(tools, "viewer"), ["or_chat"]);
+  assert.deepEqual(authority.allowedToolNames(tools, "member"), ["or_chat", "ns_create_record"]);
+  assert.deepEqual(authority.allowedToolNames(tools, "admin").sort(), [
+    "cp_delete_record",
+    "ns_create_record",
+    "or_chat",
+    "or_keys_list",
+  ].sort());
+  // A hard deny list wins over every role, administrators included.
+  process.env.QUILLON_TOOL_DENY = "cp_delete_*";
+  assert.deepEqual(
+    authority.allowedToolNames(tools, "admin").sort(),
+    ["ns_create_record", "or_chat", "or_keys_list"].sort(),
+  );
+  delete process.env.QUILLON_TOOL_DENY;
+});
+
+await check("record policy blocks payroll and employee writes for members", () => {
+  const netsuiteWrite = { recordType: "employee", values: { salary: 120000 } };
+  assert.notEqual(records.recordPolicyReason("netsuite", "ns_create_record", netsuiteWrite, "member"), null);
+  assert.notEqual(
+    records.recordPolicyReason("salesforce", "sf_create_record", { sobject: "User", data: { Name: "x" } }, "member"),
+    null,
+  );
+  // A field alone is enough, on any restricted connector.
+  assert.notEqual(
+    records.recordPolicyReason("hubspot", "hs_create_contact", { properties: { ssn: "000-00-0000" } }, "member"),
+    null,
+  );
+  // Ordinary CRM work stays open to a member, and administrators are unrestricted.
+  assert.equal(records.recordPolicyReason("hubspot", "hs_create_contact", { properties: { email: "a@b.test" } }, "member"), null);
+  assert.equal(records.recordPolicyReason("netsuite", "ns_create_record", netsuiteWrite, "admin"), null);
+  // Connectors with no employment or finance records are untouched.
+  assert.equal(records.recordPolicyReason("slack", "ent_slack_send_message", { channel: "hr", text: "hi" }, "member"), null);
+});
+
+await check("capability grants are mandatory for members, optional for administrators", () => {
+  assert.equal(policy.capabilitiesRequired("member"), true);
+  assert.equal(policy.capabilitiesRequired("viewer"), true);
+  assert.equal(policy.capabilitiesRequired("admin"), false);
+  process.env.QUILLON_REQUIRE_GRANTS = "1";
+  assert.equal(policy.capabilitiesRequired("admin"), true);
+  delete process.env.QUILLON_REQUIRE_GRANTS;
+});
+
+await check("a tool timeout aborts the running call and warns about lost writes", async () => {
+  let signal;
+  const hanging = {
+    or_chat: {
+      execute: async (_input, options) => {
+        signal = options.abortSignal;
+        return new Promise((resolve) => options.abortSignal.addEventListener("abort", () => resolve("stopped")));
+      },
+    },
+    ns_create_record: {
+      execute: async (_input, options) => {
+        signal = options.abortSignal;
+        return new Promise((resolve) => options.abortSignal.addEventListener("abort", () => resolve("stopped")));
+      },
+    },
+  };
+  const wrapped = policy.withToolTimeouts(hanging, 60);
+  await assert.rejects(() => wrapped.or_chat.execute({}, {}), /timed out/);
+  assert.equal(signal.aborted, true, "the read's signal must be aborted on timeout");
+  await assert.rejects(() => wrapped.ns_create_record.execute({}, {}), /read the record back before retrying/);
+  assert.equal(signal.aborted, true, "the write's signal must be aborted on timeout");
+});
+
+await check("an allowlisted host that resolves privately is still refused", async () => {
+  const resolver = async () => [{ address: "10.0.0.7", family: 4 }];
+  const scoped = { allowlist: ["internal.corp.test"], resolver };
+  process.env.QUILLON_EGRESS_ALLOWLIST = "internal.corp.test";
+  delete process.env.QUILLON_EGRESS_PRIVATE_HOSTS;
+  await assert.rejects(() => net.assertPublicDestination("https://internal.corp.test/api", scoped), /blocked address/);
+  // Reaching an internal service needs the destination named explicitly.
+  process.env.QUILLON_EGRESS_PRIVATE_HOSTS = "internal.corp.test";
+  await assert.doesNotReject(() => net.assertPublicDestination("https://internal.corp.test/api", scoped));
+  // An unlisted private destination stays refused even with the approval set.
+  delete process.env.QUILLON_EGRESS_ALLOWLIST;
+  delete process.env.QUILLON_EGRESS_PRIVATE_HOSTS;
+});
+
+await check("signed audit checkpoints detect a rewritten audit log", async () => {
+  const db = dbModule.getDb();
+  db.prepare("INSERT INTO audit_log (org, actor, action, resource, detail, hash) VALUES ('default','t','a','r','{}','h1')").run();
+  const created = checkpoints.createCheckpoint("default");
+  assert.equal(created.created, true);
+  assert.equal(checkpoints.verifyCheckpoints("default").ok, true);
+  assert.equal(checkpoints.createCheckpoint("default").created, false, "no new rows means no new checkpoint");
+
+  // A rewritten checkpoint no longer matches its signature.
+  db.prepare("UPDATE audit_checkpoints SET audit_count = 999 WHERE seq = ?").run(created.checkpoint.seq);
+  const tampered = checkpoints.verifyCheckpoints("default");
+  assert.equal(tampered.ok, false);
+  assert.match(tampered.broken.reason, /signature/);
+
+  // A log row deleted after signing is caught as well.
+  db.prepare("UPDATE audit_checkpoints SET audit_count = 1 WHERE seq = ?").run(created.checkpoint.seq);
+  db.prepare("UPDATE audit_checkpoints SET signature = ? WHERE seq = ?").run(
+    // Re-sign with the real key so only the missing row can fail the check.
+    (await import("node:crypto")).createHmac("sha256", process.env.QUILLON_AUDIT_KEY)
+      .update(JSON.stringify([created.checkpoint.seq, "default", 1, created.checkpoint.headHash, null]))
+      .digest("hex"),
+    created.checkpoint.seq,
+  );
+  db.prepare("DELETE FROM audit_log WHERE hash = 'h1'").run();
+  const removed = checkpoints.verifyCheckpoints("default");
+  assert.equal(removed.ok, false);
+  assert.match(removed.broken.reason, /rewritten or removed/);
+});
+
 console.log(`\n${passed} passed${failures.length ? `, ${failures.length} FAILED` : ""}`);
 if (failures.length) {
   for (const f of failures) console.log(`  - ${f}`);

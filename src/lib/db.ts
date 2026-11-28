@@ -366,4 +366,21 @@ const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS audit_log_org ON audit_log (org, id);
     `,
   },
+  {
+    id: 16,
+    name: "audit-checkpoints",
+    sql: `
+      CREATE TABLE audit_checkpoints (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        org TEXT NOT NULL DEFAULT 'default',
+        audit_count INTEGER NOT NULL,
+        head_hash TEXT,
+        prev_signature TEXT,
+        signature TEXT NOT NULL,
+        exported INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE INDEX IF NOT EXISTS audit_checkpoints_org ON audit_checkpoints (org, seq);
+    `,
+  },
 ];

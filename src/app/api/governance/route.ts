@@ -5,6 +5,13 @@ import { guard, audit, listAudit, isAdmin } from "@/lib/guard";
 import { listCapabilities, grantCapability, revokeCapability, purgeExpired } from "@/lib/capability";
 import { listRuns, replayRun, recoverySweep } from "@/lib/durable";
 import { listReports } from "@/lib/verify";
+import {
+  AuditKeyMissingError,
+  createCheckpoint,
+  exportCheckpoint,
+  listCheckpoints,
+  verifyCheckpoints,
+} from "@/lib/audit-checkpoint";
 
 export const maxDuration = 30;
 
@@ -41,6 +48,8 @@ const schema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("revoke"), id: z.string().trim().min(1) }),
   z.object({ op: z.literal("replay"), id: z.string().trim().min(1) }),
   z.object({ op: z.literal("purge") }),
+  z.object({ op: z.literal("audit-checkpoint") }),
+  z.object({ op: z.literal("audit-verify") }),
 ]);
 
 export async function POST(req: Request) {
@@ -69,6 +78,37 @@ export async function POST(req: Request) {
       const n = purgeExpired();
       audit(req, gate, "capability.purge", "capabilities", { removed: n });
       return Response.json({ removed: n });
+    }
+    case "audit-checkpoint": {
+      // Signed outside the database, then shipped to the configured sink so a
+      // database rewrite cannot silently rewrite history as well.
+      try {
+        const result = createCheckpoint();
+        let exported: { exported: boolean; detail: string } = { exported: false, detail: "Nothing new to sign." };
+        if (result.checkpoint) {
+          audit(req, gate, "audit.checkpoint", String(result.checkpoint.seq), {
+            head: result.checkpoint.headHash,
+          });
+          exported = await exportCheckpoint(result.checkpoint);
+          if (!exported.exported) {
+            return Response.json(
+              { checkpoint: result.checkpoint, exported, warning: exported.detail },
+              { status: 200 },
+            );
+          }
+        }
+        return Response.json({ checkpoint: result.checkpoint ?? null, exported });
+      } catch (err) {
+        if (err instanceof AuditKeyMissingError) {
+          return Response.json({ error: { message: err.message } }, { status: 503 });
+        }
+        throw err;
+      }
+    }
+    case "audit-verify": {
+      const verdict = verifyCheckpoints();
+      audit(req, gate, "audit.verify", "audit_log", verdict);
+      return Response.json({ verdict, checkpoints: listCheckpoints(undefined, 20) });
     }
   }
 }

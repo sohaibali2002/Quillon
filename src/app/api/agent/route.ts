@@ -24,10 +24,10 @@ import { skillsContext } from "@/lib/skills";
 import { unifiedToolset } from "@/lib/tool-registry";
 import { enforceToolAuthority } from "@/lib/tool-authority";
 import { roleOf } from "@/lib/rbac";
-import { enforceCapabilities, selectRelevantTools, withToolTimeouts } from "@/lib/tool-policy";
+import { enforceCapabilities, selectRelevantTools, withRecordPolicy, withToolTimeouts } from "@/lib/tool-policy";
 import { createOrchestrateTool } from "@/lib/orchestrator";
 
-import { guard } from "@/lib/guard";
+import { guard, capabilitySubject } from "@/lib/guard";
 export const maxDuration = 60;
 
 const summarySchema = z.object({
@@ -106,22 +106,25 @@ export async function POST(req: Request) {
     console.error("mcp toolset errors:", JSON.stringify(unified.mcpErrors));
   }
 
-  // Policy: capability grants, relevance shortlist for this prompt, timeouts.
+  // Policy: manifest authority, capability grants bound to the signed-in
+  // identity, record restrictions, relevance shortlist, one timeout per call.
   // Structured mode is a pure summarisation pass: exposing tools there makes
   // models answer with a tool call instead of the JSON object, so it runs bare.
+  const role = roleOf(denied);
+  const granted = enforceCapabilities(
+    enforceToolAuthority(
+      {
+        ...unified.tools,
+        orchestrate: createOrchestrateTool(body.model),
+      },
+      role,
+    ),
+    unified.catalog,
+    { subject: capabilitySubject(denied), role },
+  );
   const toolset = withToolTimeouts(
     selectRelevantTools(
-      enforceCapabilities(
-        enforceToolAuthority(
-          {
-            ...unified.tools,
-            orchestrate: createOrchestrateTool(body.model),
-          },
-          roleOf(denied),
-        ),
-        unified.catalog,
-        conversationId,
-      ),
+      withRecordPolicy(granted, unified.catalog, role),
       unified.catalog,
       prompt,
     ),

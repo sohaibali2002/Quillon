@@ -170,7 +170,7 @@ export default function Ask() {
         ref={inputRef}
         value={input}
         rows={empty ? 3 : 1}
-        aria-label="Ask Quillon"
+        aria-label="Message Quillon"
         placeholder={empty ? "Ask anything, attach a file, or paste code to run" : "Ask a follow-up"}
         onChange={(e) => setInput(e.target.value)}
         onKeyDown={(e) => {
@@ -220,7 +220,7 @@ export default function Ask() {
             Stop
           </button>
         ) : (
-          <button type="submit" className="lg-send" disabled={!canSend} aria-label="Ask Quillon">
+          <button type="submit" className="lg-send" disabled={!canSend} aria-label="Send message">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M12 19V5M5 12l7-7 7 7" />
             </svg>

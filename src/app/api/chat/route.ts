@@ -22,9 +22,9 @@ import { unifiedToolset } from "@/lib/tool-registry";
 import { enforceToolAuthority } from "@/lib/tool-authority";
 import { roleOf } from "@/lib/rbac";
 import { createOrchestrateTool } from "@/lib/orchestrator";
-import { enforceCapabilities, selectRelevantTools, withToolTimeouts } from "@/lib/tool-policy";
+import { enforceCapabilities, selectRelevantTools, withRecordPolicy, withToolTimeouts } from "@/lib/tool-policy";
 
-import { guard } from "@/lib/guard";
+import { guard, capabilitySubject } from "@/lib/guard";
 export const maxDuration = 30;
 
 // Parts are validated by shape: known types pass through, anything else is
@@ -141,7 +141,9 @@ export async function POST(req: Request) {
       ?.parts.map((p) => (p.type === "text" ? p.text : p.type === "file" ? p.filename ?? "" : ""))
       .join(" ") ?? "";
 
-  // Policy: capability grants, relevance shortlist, then one timeout per call.
+  // Policy: manifest authority, capability grants bound to the signed-in
+  // identity, record restrictions, relevance shortlist, one timeout per call.
+  const role = roleOf(denied);
   const toolset = enforceToolAuthority(
     {
       ...unified.tools,
@@ -149,11 +151,15 @@ export async function POST(req: Request) {
       // job (fetch → enrich → document) to the orchestrator in one call.
       orchestrate: createOrchestrateTool(model),
     },
-    roleOf(denied),
+    role,
   );
+  const granted = enforceCapabilities(toolset, unified.catalog, {
+    subject: capabilitySubject(denied),
+    role,
+  });
   const tools = withToolTimeouts(
     selectRelevantTools(
-      enforceCapabilities(toolset, unified.catalog, conversationId),
+      withRecordPolicy(granted, unified.catalog, role),
       unified.catalog,
       lastUserText,
     ),

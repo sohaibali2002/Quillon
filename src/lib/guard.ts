@@ -14,6 +14,15 @@ export function roleOf(session: Session): Role {
 // Tenant key for per-org data (knowledge graph, audit rows).
 export const orgForSession = tenantOrgOf;
 
+// The identity a capability grant belongs to: the tenant and the authenticated
+// user. A caller-supplied conversation id is not an identity and must never be
+// used as a grant subject.
+export function capabilitySubject(session: Session | null): string {
+  const org = session ? orgForSession(session) : "system";
+  const user = session?.sub?.trim() || session?.email?.trim() || "anonymous";
+  return `${org}|${user}`;
+}
+
 export function authEnforced(): boolean {
   if (process.env.QUILLON_REQUIRE_AUTH === "1") return true;
   return ssoConfig() !== null;

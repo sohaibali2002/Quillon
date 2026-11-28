@@ -162,14 +162,17 @@
   text-align: center;
 }
 .lg-eyebrow {
+  display: block;
+  margin: 0;
   font-size: 0.78rem;
+  line-height: 1.6;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--accent);
 }
 .lg-title {
-  margin-top: 12px;
+  margin-top: 20px;
   font-size: clamp(1.9rem, 4.2vw, 2.7rem);
   line-height: 1.1;
   letter-spacing: -0.025em;
@@ -546,6 +549,9 @@
   .lx-rail[data-open="true"] { transform: none; visibility: visible; transition: transform 0.22s ease; }
   .lx-rail .lx-home { display: none; }
   .lx-main { margin-left: 0; min-height: calc(100dvh - 57px); }
+  /* Phone: the drawer is modal, so the page behind the scrim is neither seen
+     nor reachable until it closes. */
+  .lx[data-drawer="open"] .lx-main { visibility: hidden; }
   .lx-scrim { z-index: 50; }
   .lg-home { padding: 40px 16px 48px; }
   .lg-starters { grid-template-columns: minmax(0, 1fr); }

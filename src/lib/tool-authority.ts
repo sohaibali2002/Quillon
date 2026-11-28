@@ -1,34 +1,73 @@
 // Tool authority, enforced outside the model.
 //
 // A role on the route says who may reach an endpoint; it says nothing about
-// which tool an agent may then call. Every tool is classified by what it does,
-// and the set handed to the model is filtered by the caller's role so a
-// prompt-injected turn cannot reach a credential or delete financial records.
+// which tool an agent may then call. Every tool's class comes from the explicit
+// permission manifest in tool-manifest.ts — never from its name — and the set
+// handed to the model is filtered by the caller's role so a prompt-injected turn
+// cannot reach a credential, an administrative endpoint or financial records.
 //
 //   viewer  read tools only
 //   member  read + ordinary writes; destructive and administrative tools denied
 //   admin   everything
 //
+// A tool that is not in the manifest is denied to every role: new integrations
+// must declare their class before the model can call them (set
+// QUILLON_TOOL_ALLOW_UNLISTED=1 only for a deliberate, temporary exception).
 // QUILLON_TOOL_DENY="or_keys_*,cp_delete_*" adds a hard deny list on top, and
 // QUILLON_TOOL_ADMIN_ALLOW lets a named tool stay available to members.
 import type { ToolSet } from "ai";
 import type { Role } from "@/lib/rbac";
+import { TOOL_CLASSES, type ToolClass } from "@/lib/tool-manifest";
 
-export type ToolClass = "read" | "write" | "destructive" | "admin";
+export type { ToolClass } from "@/lib/tool-manifest";
 
-const DESTRUCTIVE = /(^|_)(delete|destroy|purge|remove|void|drop|revoke|transform|approve|refund|cancel|post_labor|batch|execute|send)(_|$)/i;
-const WRITE = /(^|_)(create|update|patch|upsert|set|write|post|put|add|generate|upload|move|assign|import)(_|$)/i;
+/** MCP tools are discovered at runtime and named `mcp_<server>_<tool>`. */
+const MCP_PREFIX = "mcp_";
 
-// Administrative surfaces: credentials, tenants, budgets, guardrails, org
-// settings and private endpoints are not something an agent session should hold
-// even when the same API key could technically call them.
-const ADMIN = /^(or_(keys?|workspaces?|budget|credits?|organization|org_|guardrails?|endpoints?|providers?|byok|members?|users?|observability|analytics)_)|^(mcp_|skill_(install|remove|write))/i;
+function normalizeServer(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
 
+// A discovered MCP tool runs third-party code with whatever reach the server
+// process has, so it is administrator-only unless the operator names that
+// server in QUILLON_MCP_MEMBER_SERVERS (comma separated, exact server names).
+function mcpToolClass(name: string): ToolClass {
+  if (!name.startsWith(MCP_PREFIX)) return "admin";
+  const servers = (process.env.QUILLON_MCP_MEMBER_SERVERS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => `mcp_${normalizeServer(s)}_`);
+  for (const prefix of servers) {
+    if (name.startsWith(prefix)) return "write";
+  }
+  return "admin";
+}
+
+export type ToolVerdict =
+  | { class: ToolClass; known: true }
+  | { class: "unlisted"; known: false; reason: string };
+
+/**
+ * The declared class of a tool, or `unlisted` when the manifest has no entry.
+ * Dynamic MCP tools are the one family classified outside the table, and only
+ * because their names cannot exist before a server is registered.
+ */
+export function toolVerdict(name: string): ToolVerdict {
+  const declared = TOOL_CLASSES[name];
+  if (declared) return { class: declared, known: true };
+  if (name.startsWith(MCP_PREFIX)) return { class: mcpToolClass(name), known: true };
+  return {
+    class: "unlisted",
+    known: false,
+    reason: `"${name}" is not in the tool permission manifest; declare it in src/lib/tool-manifest.ts before the model may call it.`,
+  };
+}
+
+/** The declared class, or "admin" for anything the manifest does not cover. */
 export function classifyTool(name: string): ToolClass {
-  if (ADMIN.test(name)) return "admin";
-  if (DESTRUCTIVE.test(name)) return "destructive";
-  if (WRITE.test(name)) return "write";
-  return "read";
+  const verdict = toolVerdict(name);
+  return verdict.known ? verdict.class : "admin";
 }
 
 function denyList(): string[] {
@@ -52,7 +91,13 @@ function matches(patterns: string[], name: string): boolean {
 /** Why the role may not call this tool, or null when it may. */
 export function toolAuthorityReason(name: string, role: Role): string | null {
   if (matches(denyList(), name)) return `"${name}" is blocked by QUILLON_TOOL_DENY.`;
-  const cls = classifyTool(name);
+  const verdict = toolVerdict(name);
+  if (!verdict.known) {
+    if (process.env.QUILLON_TOOL_ALLOW_UNLISTED !== "1") return verdict.reason;
+    if (role !== "admin") return `"${name}" has no declared permission class and needs an administrator.`;
+    return null;
+  }
+  const cls = verdict.class;
   if (cls === "read") return null;
   if (role === "admin") return null;
   if (role === "member") {
@@ -60,7 +105,7 @@ export function toolAuthorityReason(name: string, role: Role): string | null {
     if (matches(adminAllowList(), name)) return null;
     return cls === "destructive"
       ? `"${name}" changes or removes records and needs an administrator.`
-      : `"${name}" administers provider or platform credentials and needs an administrator.`;
+      : `"${name}" administers identities, credentials or platform settings and needs an administrator.`;
   }
   return `"${name}" writes data; the viewer role is read-only.`;
 }

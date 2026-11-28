@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quillon security review — remediation report, 28 November 2026</title>
+<style>
+  :root {
+    --bg: #f6f7f4;
+    --surface: #ffffff;
+    --text: #1f2937;
+    --heading: #101822;
+    --muted: #4b5563;
+    --accent: #0f6b5c;
+    --accent-soft: #e3efec;
+    --border: #d9ded7;
+    --warn: #8a4b0f;
+    --warn-soft: #fbf0e2;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(16, 24, 34, .06), 0 8px 24px rgba(16, 24, 34, .06);
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-variant-numeric: tabular-nums;
+  }
+  .page { max-width: 860px; margin: 0 auto; padding: 48px 24px 72px; }
+  .eyebrow {
+    font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--accent); font-weight: 700; margin: 0 0 12px;
+  }
+  h1 { font-size: clamp(28px, 4vw, 40px); line-height: 1.15; letter-spacing: -.02em; color: var(--heading); margin: 0 0 12px; }
+  .lede { font-size: 18px; color: var(--muted); margin: 0 0 28px; max-width: 64ch; }
+  h2 {
+    font-size: 20px; letter-spacing: -.01em; color: var(--heading);
+    margin: 40px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  }
+  h3 { font-size: 16px; color: var(--heading); margin: 24px 0 6px; }
+  p, li { max-width: 72ch; }
+  ul { padding-left: 20px; }
+  li + li { margin-top: 6px; }
+  code {
+    font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #eef1ec; border-radius: 4px; padding: 1px 5px;
+  }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--muted); font-size: 14px; margin-bottom: 8px; }
+  .band {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px; margin: 28px 0 8px;
+  }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
+  .stat b { display: block; font-size: 26px; color: var(--heading); letter-spacing: -.02em; }
+  .stat span { font-size: 13px; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 8px; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 10px; border-bottom: 1px solid var(--border); }
+  th { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  td.status { white-space: nowrap; font-weight: 600; }
+  .done { color: var(--accent); }
+  .partial { color: var(--warn); }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: var(--radius); padding: 16px 18px; margin: 14px 0; box-shadow: var(--shadow);
+  }
+  .card h3 { margin-top: 0; }
+  .card p:last-child { margin-bottom: 0; }
+  .note { background: var(--accent-soft); border: 1px solid #c9e0da; border-radius: var(--radius); padding: 14px 16px; margin: 18px 0; }
+  .open { background: var(--warn-soft); border: 1px solid #efd9bd; border-left-color: var(--warn); }
+  footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+  @media print {
+    :root { --bg: #ffffff; --shadow: none; }
+    body { font-size: 11pt; }
+    .page { max-width: none; padding: 0 0 12mm; }
+    h2 { break-after: avoid; }
+    .card, .stat, table { break-inside: avoid; }
+    .open { border-left-color: var(--warn); }
+  }
+</style>
+</head>
+<body>
+<main class="page">
+  <p class="eyebrow">Quillon · security remediation</p>
+  <h1>Review response: authorisation, timeouts, egress and audit integrity</h1>
+  <div class="meta">
+    <span>28 November 2026</span>
+    <span>Repository: sohaibali2002/Quillon</span>
+    <span>Scope: the nine open findings in the current source</span>
+  </div>
+  <p class="lede">Each remaining finding is now closed in code, with a regression check that fails on the old behaviour. Two limits stay open by design and are stated plainly at the end.</p>
+
+  <div class="band">
+    <div class="stat"><b>9 / 9</b><span>findings fixed</span></div>
+    <div class="stat"><b>364</b><span>tools with an explicit class</span></div>
+    <div class="stat"><b>28</b><span>security checks, was 19</span></div>
+    <div class="stat"><b>0</b><span>type errors, build errors, console errors</span></div>
+  </div>
+
+  <h2>What was wrong, and what changed</h2>
+
+  <div class="card">
+    <h3>1. Tool classification could grant excessive permissions</h3>
+    <p><code>src/lib/tool-manifest.ts</code> replaces name-based regular expressions with an explicit table: one class per tool — read, write, destructive or admin — for all 364 built-in, OpenRouter, Salesforce, HubSpot, NetSuite, Costpoint and enterprise-platform tools. <code>classifyTool</code> reads only that table, and a tool missing from it is denied to every role.</p>
+    <p>The three cited operations — <code>or_external_users_create</code>, <code>or_private_endpoints_create</code>, <code>or_private_providers_create</code> — are admin, as are <code>or_request</code> (a raw passthrough to any OpenRouter endpoint), <code>runCode</code> and every credential, tenancy and governance surface. <code>scripts/generate-tool-manifest.mjs</code> regenerates the table; the check suite fails if a declared tool has no class.</p>
+  </div>
+
+  <div class="card">
+    <h3>2. Capability enforcement was optional</h3>
+    <p>Grants are now mandatory for member and viewer sessions — an administrator already holds the platform, so forcing self-grants only trains people to switch the check off — and <code>QUILLON_REQUIRE_GRANTS=1</code> extends that to admins. The subject is <code>capabilitySubject(session)</code>: tenant plus signed-in user. A caller-supplied conversation id is never a grant subject.</p>
+  </div>
+
+  <div class="card">
+    <h3>3. Tool timeouts did not cancel the work</h3>
+    <p>Each call now gets an AbortController; <code>src/lib/tool-signal.ts</code> carries that signal into <code>connector-sdk</code>'s fetch, so a timeout or a cancelled turn aborts the outbound request instead of leaving a write running. For non-read tools the error tells the model the remote system may already have applied the change and to read the record back before retrying.</p>
+  </div>
+
+  <div class="card">
+    <h3>4. Egress allowlists bypassed private-address checks</h3>
+    <p>The allowlist now chooses <em>which</em> hosts may be reached; it no longer skips address validation. An allowlisted name resolving to loopback, a private range, CGNAT or a metadata endpoint is refused unless the operator also names it in <code>QUILLON_EGRESS_PRIVATE_HOSTS</code> — an explicit grant per internal destination rather than a blanket exception.</p>
+  </div>
+
+  <div class="card">
+    <h3>5. DNS rebinding</h3>
+    <p>Every DNS answer is checked, and every redirect hop is revalidated. Pinning the validated address to the actual socket needs a custom dispatcher or network-layer egress control; that remains an infrastructure task, not a code one.</p>
+  </div>
+
+  <div class="card">
+    <h3>6. MCP processes were not isolated</h3>
+    <p>What the platform controls is now tightened: stdio arguments are length- and control-character-checked, dangerous Docker flags and protected mounts are rejected, credential-like arguments are refused, packages must be version-pinned, the child inherits only HOME, PATH and the other safe variables, and every <code>mcp_*</code> tool is administrator-only unless the server is named in <code>QUILLON_MCP_MEMBER_SERVERS</code>. Running the process under a dedicated low-privilege identity and verifying package provenance remain open.</p>
+  </div>
+
+  <div class="card">
+    <h3>7. Code execution lacked a hard boundary</h3>
+    <p><code>src/lib/sandbox-isolation.ts</code> already builds a chroot jail inside user, mount and pid namespaces with a read-only system root, a private <code>/tmp</code> and the network denied. Isolation is now required in production; <code>QUILLON_SANDBOX_ALLOW_UNJAILED=1</code> is the single explicit opt-out, and a subprocess timeout is no longer presented as a boundary.</p>
+  </div>
+
+  <div class="card">
+    <h3>8. Enterprise record permissions were broad</h3>
+    <p><code>src/lib/record-policy.ts</code> inspects what a write actually touches. Payroll, employee, vendor, journal, deposit, budget and access-control records — and sensitive fields such as salary, SSN, bank details or tax ids — are administrator-only for writes across Salesforce, HubSpot, NetSuite and Costpoint. Ordinary CRM work stays available to members; <code>QUILLON_RECORD_ALLOW</code> re-opens named records or fields deliberately.</p>
+  </div>
+
+  <div class="card">
+    <h3>9. Audit integrity lived only in the database it protects</h3>
+    <p><code>src/lib/audit-checkpoint.ts</code> signs the audit head with <code>QUILLON_AUDIT_KEY</code> (HMAC-SHA256, key never stored in the database), chains the checkpoints, and ships each to <code>QUILLON_AUDIT_SINK</code> — an https endpoint or an append-only file outside the workspace. Migration 16 adds the table; <code>/api/governance</code> gains <code>audit-checkpoint</code> and <code>audit-verify</code>, which re-checks signatures and proves the signed rows still exist.</p>
+  </div>
+
+  <h2>Verification</h2>
+  <table>
+    <thead><tr><th>Check</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td><code>npx tsc --noEmit</code></td><td class="status done">exit 0</td></tr>
+      <tr><td><code>npm run check:security</code></td><td class="status done">28 passed, exit 0</td></tr>
+      <tr><td>Costpoint, NetSuite, HubSpot, Salesforce, OpenRouter, orchestration suites</td><td class="status done">all exit 0</td></tr>
+      <tr><td><code>npm run build</code></td><td class="status done">exit 0</td></tr>
+      <tr><td><code>tests/smoke.mjs</code></td><td class="status done">58 / 58, exit 0</td></tr>
+      <tr><td>Browser check, 390 px</td><td class="status done">interactive, 0 clipped, 0 overlap, 0 console errors</td></tr>
+      <tr><td>Live <code>POST /api/governance {"op":"audit-checkpoint"}</code> then <code>audit-verify</code></td><td class="status done">signature issued, <code>{"ok":true,"checked":1}</code></td></tr>
+    </tbody>
+  </table>
+  <p>New regression checks pin the manifest coverage, admin classification of the cited operations, the default-deny rule, role filtering, record restrictions, the grant rule, aborting timeouts, refusal of an allowlisted private destination, and detection of a rewritten audit log.</p>
+
+  <h2>Open, stated plainly</h2>
+  <div class="note open">
+    <ul>
+      <li>DNS answers are validated but not pinned at the socket; a determined rebinding attack needs network-layer egress control.</li>
+      <li>MCP processes still run with the host's privileges, and package provenance is unverified.</li>
+      <li>Audit checkpoints only prove integrity once <code>QUILLON_AUDIT_SINK</code> points at storage outside the database, and the key must be backed up separately.</li>
+    </ul>
+  </div>
+
+  <h2>Assumption</h2>
+  <p>Grants are required for member and viewer sessions and optional for administrators, unless <code>QUILLON_REQUIRE_GRANTS</code> says otherwise.</p>
+
+  <footer>
+    Quillon · Apache-2.0 · report generated from the code and check output on 28 November 2026.
+  </footer>
+</main>
+</body>
+</html>

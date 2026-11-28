@@ -93,6 +93,28 @@ write in a plain app, with an inspectable surface for every capability.
 - **SSRF defence** — `src/lib/net-guard.ts` blocks loopback, private,
   link-local, CGNAT, metadata and NAT64/6to4 destinations, including
   IPv4-mapped IPv6 (`::ffff:127.0.0.1`), and revalidates every redirect hop.
+  The egress allowlist chooses which hosts may be reached; it does not switch
+  off address checks — an allowlisted name that resolves privately is refused
+  unless the operator names it in `QUILLON_EGRESS_PRIVATE_HOSTS`.
+- **Tool authority** — `src/lib/tool-manifest.ts` gives every one of the 364
+  tools an explicit class (read / write / destructive / admin) and
+  `src/lib/tool-authority.ts` filters the toolset by role before it reaches the
+  model. Nothing is classified by name: a tool that is not in the manifest is
+  denied to every role, `runCode` and OpenRouter's administrative endpoints are
+  administrator-only, and third-party MCP tools need the server named in
+  `QUILLON_MCP_MEMBER_SERVERS` before a member may call them.
+- **Capability and record policy** — connector actions need an expiring grant
+  bound to the signed-in user and tenant (`capabilitySubject`), mandatory for
+  member and viewer sessions; payroll, employee, vendor and journal records
+  (plus salary, SSN and bank fields) are administrator-only for writes across
+  Salesforce, HubSpot, NetSuite and Costpoint (`src/lib/record-policy.ts`).
+  Timeouts abort the call's AbortSignal, so a timed-out write is cancelled
+  rather than left running behind the model.
+- **Audit integrity outside the database** — `src/lib/audit-checkpoint.ts`
+  signs the audit head with `QUILLON_AUDIT_KEY`, chains the checkpoints and can
+  ship each one to an https endpoint or an append-only file
+  (`QUILLON_AUDIT_SINK`). `POST /api/governance {"op":"audit-verify"}` re-checks
+  signatures and proves the signed rows still exist.
 
 ## Quick start
 
@@ -207,7 +229,7 @@ assertions, + contract pin of all 93 operations against the official spec).
 ```bash
 npx tsc --noEmit           # type check
 npm run build              # production build
-npm run check:security     # trust-boundary suite (redaction, SSRF, RBAC, guarded writes)
+npm run check:security     # trust-boundary suite (redaction, SSRF, tool authority, audit checkpoints)
 node tests/smoke.mjs       # route + UI smoke tests (no key needed)
 ```
 

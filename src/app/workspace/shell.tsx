@@ -1,8 +1,7 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
 import { BrandMark } from "@/app/components/brand";
 import ModeBadge from "@/app/components/mode-badge";
 import AgentPanel from "@/app/components/agent-panel";
@@ -46,9 +45,8 @@ const panels = [
 ] as const;
 
 function Shell({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
-  const params = useSearchParams();
-  const active = panels.find((p) => p.id === params.get("panel")) ?? null;
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const active = panels.find((p) => p.id === activeId) ?? null;
   const drawerRef = useRef<HTMLElement | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [isDesktop, setIsDesktop] = useState(true);
@@ -78,15 +76,16 @@ function Shell({ children }: { children: React.ReactNode }) {
 
   const open = useCallback(
     (id: string | null) => {
-      const next = new URLSearchParams(params.toString());
-      if (id) next.set("panel", id);
-      else next.delete("panel");
-      const qs = next.toString();
-      router.replace(qs ? `/workspace?${qs}` : "/workspace", { scroll: false });
+      setActiveId(id);
       setNavOpen(false);
     },
-    [params, router],
+    [],
   );
+
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get("panel");
+    if (fromUrl) setActiveId(fromUrl);
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -235,9 +234,5 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 export default function WorkspaceShell({ children }: { children: React.ReactNode }) {
-  return (
-    <Suspense fallback={<main className="lx-main">{children}</main>}>
-      <Shell>{children}</Shell>
-    </Suspense>
-  );
+  return <Shell>{children}</Shell>;
 }

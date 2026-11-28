@@ -213,6 +213,12 @@ export async function sandboxIsolation(
   return { mode: "none", prefix: [], network: true, detail: "no isolation available on this host" };
 }
 
+// A subprocess timeout is a resource limit, not a security boundary: unless the
+// code runs inside an OS jail it can read what the platform can read and reach
+// the network it can reach. Production therefore requires isolation, and a
+// deployment that wants unjailed execution has to say so explicitly.
 export function isolationRequired(): boolean {
-  return process.env.QUILLON_SANDBOX_REQUIRE_ISOLATION === "1";
+  if (process.env.QUILLON_SANDBOX_REQUIRE_ISOLATION === "1") return true;
+  if (process.env.QUILLON_SANDBOX_ALLOW_UNJAILED === "1") return false;
+  return process.env.NODE_ENV === "production";
 }

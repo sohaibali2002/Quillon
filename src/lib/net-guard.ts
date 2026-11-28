@@ -131,6 +131,19 @@ function allowlisted(hostname: string, allowlist: string[]): boolean {
   return allowlist.some((entry) => hostname === entry || hostname.endsWith(`.${entry}`));
 }
 
+/**
+ * Internal destinations an operator approved explicitly. An allowlisted host
+ * that must resolve to a private address belongs here; the allowlist alone is
+ * not permission to reach the private network.
+ */
+function privateDestinationApproved(hostname: string): boolean {
+  return (process.env.QUILLON_EGRESS_PRIVATE_HOSTS ?? "")
+    .split(",")
+    .map((h) => normaliseHost(h))
+    .filter(Boolean)
+    .some((entry) => hostname === entry || hostname.endsWith(`.${entry}`));
+}
+
 function normaliseHost(hostname: string): string {
   return hostname.trim().toLowerCase().replace(/\.+$/, "").replace(/^\[|\]$/g, "");
 }
@@ -190,7 +203,12 @@ export async function assertPublicDestination(
   const allowlist = policy.allowlist ?? egressAllowlist();
   const allowed = allowlisted(hostname, allowlist);
 
-  if (!policy.allowPrivate && !allowed) {
+  // The allowlist chooses *which* hosts may be reached; it never switches off
+  // address validation. An allowlisted name that resolves to loopback, a
+  // private range or a cloud-metadata endpoint is still refused unless the
+  // operator approved that exact internal destination in
+  // QUILLON_EGRESS_PRIVATE_HOSTS (and allowlisted it too).
+  if (!policy.allowPrivate) {
     if (METADATA_HOSTS.has(hostname) || LOOPBACK_NAMES.has(hostname)) {
       throw new Error(`Destination ${hostname} is a local or cloud-metadata host and is blocked.`);
     }
@@ -200,10 +218,15 @@ export async function assertPublicDestination(
       if (reason) throw new Error(`Destination ${hostname} is blocked (${reason}).`);
     } else {
       const answers = await resolveAll(hostname, policy.resolver);
+      const privateApproved = allowed && privateDestinationApproved(hostname);
       for (const answer of answers) {
         const reason = addressBlockReason(answer.address);
-        if (reason) {
-          throw new Error(`Destination ${hostname} resolves to a blocked address (${reason}).`);
+        if (reason && !privateApproved) {
+          throw new Error(
+            allowed && !privateDestinationApproved(hostname)
+              ? `Destination ${hostname} is allowlisted but resolves to a blocked address (${reason}); add it to QUILLON_EGRESS_PRIVATE_HOSTS to reach an internal service.`
+              : `Destination ${hostname} resolves to a blocked address (${reason}).`,
+          );
         }
       }
     }

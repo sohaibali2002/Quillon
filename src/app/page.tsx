@@ -144,7 +144,7 @@ export default function Home() {
                   {streamRows.map((r) => (
                     <div className="stream-row" data-state={r.state} key={r.t}>
                       <span className="t">{r.t}</span>
-                      <span className="k">
+                      <span className="k" title={r.k}>
                         {r.k}
                         {r.tag === "text" && <span className="stream-cursor" aria-hidden="true" />}
                       </span>

@@ -1,5 +1,63 @@
 # Changelog
 
+## 2026-11-28 (accessibility pass on the landing page)
+
+Browser checks at 390px and 1280px now report zero low-contrast text, zero
+clipped text and zero overlapping elements.
+
+- `src/app/globals.css` — `--faint` goes from `#6b7380` to `#606875`, which
+  reaches 4.8:1 on the `--bg-deep` stat band and 5.2:1 on `--bg`. The stat band
+  labels ("provider integrations", "industry packages" and the rest), the brand
+  subtitle, terminal dim lines and the composer placeholder now pass WCAG AA
+  instead of sitting at 4.1–4.5:1.
+- `src/app/ledger.css` — the hero title takes 16px of space above it so the
+  uppercase eyebrow no longer overlaps it at phone width.
+- `src/app/page.tsx` — the stream-inspector line that truncates a long tool
+  payload now carries the full text in `title`, so the ellipsis is not lost
+  information.
+
+## 2026-11-28 (tool authority, checkpoints)
+
+Follow-up to the security review: the remaining authorisation, timeout, egress
+and audit-integrity findings are fixed, and `npm run check:security` grew from
+19 to 28 checks.
+
+- `src/lib/tool-manifest.ts` (new) — an explicit class for all 364 tools
+  (built-in, OpenRouter, Salesforce, HubSpot, NetSuite, Costpoint, the 41
+  enterprise platforms). `classifyTool` reads the table and never infers a class
+  from a name; a tool missing from it is denied to every role. Administrative
+  OpenRouter operations (`or_external_users_create`, `or_private_endpoints_create`,
+  `or_private_providers_create`, `or_request`), `runCode` and credential or
+  tenancy surfaces are `admin`. Regenerate with
+  `node --loader ./scripts/ts-resolve.mjs scripts/generate-tool-manifest.mjs`;
+  the check suite fails when a declared tool has no class.
+- `src/lib/tool-authority.ts` — manifest lookup, MCP tools administrator-only
+  unless the server is named in `QUILLON_MCP_MEMBER_SERVERS`, hard deny list
+  (`QUILLON_TOOL_DENY`), member allow list (`QUILLON_TOOL_ADMIN_ALLOW`).
+- `src/lib/tool-policy.ts` — capability grants are now mandatory for member and
+  viewer sessions (admins hold the platform; `QUILLON_REQUIRE_GRANTS=1` forces
+  them for everyone), bound to `capabilitySubject(session)` — tenant and signed-in
+  user — instead of a caller-supplied conversation id. Timeouts abort the call's
+  signal and tell the model a timed-out write may already have landed.
+- `src/lib/tool-signal.ts` (new) + `src/lib/connector-sdk.ts` — the tool call's
+  AbortSignal reaches connector fetches, so a timeout or cancelled turn cancels
+  the outbound request instead of leaving it running.
+- `src/lib/record-policy.ts` (new) — payroll, employee, vendor, journal and
+  access-control records (and sensitive fields such as salary, SSN or bank
+  details) are administrator-only for writes in Salesforce, HubSpot, NetSuite and
+  Costpoint; `QUILLON_RECORD_ALLOW` re-opens named ones.
+- `src/lib/net-guard.ts` — the allowlist now selects hosts instead of skipping
+  address validation: an allowlisted name resolving to loopback, a private range
+  or a metadata endpoint is refused unless the host is also in
+  `QUILLON_EGRESS_PRIVATE_HOSTS`. Socket-level DNS pinning still needs
+  network-layer egress control.
+- `src/lib/audit-checkpoint.ts` (new) + migration 16 — HMAC-signed checkpoints of
+  the audit head, chained, re-verifiable, exportable to an https endpoint or an
+  append-only file (`QUILLON_AUDIT_KEY`, `QUILLON_AUDIT_SINK`). Governance API:
+  `{"op":"audit-checkpoint"}`, `{"op":"audit-verify"}`.
+- `src/lib/sandbox-isolation.ts` — code execution requires OS isolation in
+  production; `QUILLON_SANDBOX_ALLOW_UNJAILED=1` is the explicit opt-out.
+
 ## 2026-11-28
 
 Security hardening across every trust boundary, with a new regression suite
