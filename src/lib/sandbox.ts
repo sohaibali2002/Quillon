@@ -6,13 +6,15 @@
 // this machine; arbitrary interpreters can be reached via the `command`
 // option (an argv array, never a shell string).
 //
-// NOTE: a subprocess with a timeout is confinement of resources, not a hard
-// security boundary — no network or filesystem jail. For untrusted
-// multi-tenant workloads run this behind a container/isolate instead.
+// Isolation: runs inside a bubblewrap jail (read-only root, private /tmp,
+// dropped capabilities, network denied by default) when the host has it, with
+// an unprivileged network namespace as fallback. Set
+// QUILLON_SANDBOX_REQUIRE_ISOLATION=1 to refuse execution without a jail.
 import { spawn } from "node:child_process";
 import { mkdtemp, writeFile, rm, readdir, stat, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isolationRequired, sandboxIsolation } from "@/lib/sandbox-isolation";
 
 export const MAX_TIMEOUT_MS = 15_000;
 export const MAX_CODE_CHARS = 100_000;
@@ -61,6 +63,8 @@ export type SandboxResult = {
   ingestedFiles: string[];
   stdoutChars: number;
   stderrChars: number;
+  /** Which OS-level isolation the run actually had. */
+  isolation?: string;
   /** Base64 contents of files the run produced, when captureFiles was set. */
   capturedFiles?: { name: string; base64: string; bytes: number }[];
 };
@@ -131,6 +135,29 @@ export async function runCode(input: SandboxInput): Promise<SandboxResult> {
 
   let argv: string[];
   const dir = await mkdtemp(join(tmpdir(), "sandbox-"));
+  const nodeModules = join(process.cwd(), "node_modules");
+  const isolation = await sandboxIsolation(dir, { nodeModules });
+
+  if (isolationRequired() && isolation.mode === "none") {
+    return {
+      language,
+      stdout: "",
+      stderr: "",
+      exitCode: null,
+      error: `Code execution is disabled: QUILLON_SANDBOX_REQUIRE_ISOLATION=1 but this host offers no isolation (${isolation.detail}). Install bubblewrap or enable unprivileged user namespaces.`,
+      durationMs: Date.now() - started,
+      filesWritten,
+      command: [],
+      timeoutMs,
+      timedOut: false,
+      truncated: false,
+      entryFile: null,
+      ingestedFiles,
+      stdoutChars: 0,
+      stderrChars: 0,
+      isolation: isolation.mode,
+    };
+  }
 
   try {
     if (Array.isArray(input.command) && input.command.length > 0) {
@@ -196,39 +223,72 @@ export async function runCode(input: SandboxInput): Promise<SandboxResult> {
       ingestedFiles,
       stdoutChars: rawStdout.length,
       stderrChars: rawStderr.length,
+      isolation: isolation.mode,
     });
 
     return await new Promise<SandboxResult>((resolve) => {
-      const child = spawn(argv[0], argv.slice(1), {
+      const command = isolation.prefix.length ? isolation.prefix[0] : argv[0];
+      const args = isolation.prefix.length
+        ? [...isolation.prefix.slice(1), ...argv]
+        : argv.slice(1);
+      const child = spawn(command, args, {
         cwd: dir,
         stdio: ["pipe", "pipe", "pipe"] as const,
+        // Own process group: the jail wrapper (bwrap/chroot) is the direct child
+        // and the interpreter is its child, so killing only the wrapper leaves
+        // `while True: pass` running and the request never settles.
+        detached: true,
         // Fresh env on purpose: the child never sees the parent's variables.
         env: {
           PATH: process.env.PATH ?? "/usr/bin:/bin",
           HOME: dir,
+          TMPDIR: isolation.mode === "bwrap" ? "/tmp" : dir,
           // Let require("exceljs") and friends resolve the app's node_modules
-          // even though the entry file lives in a temp dir.
-          NODE_PATH: join(process.cwd(), "node_modules"),
-          PYTHONPATH: join(process.cwd(), "node_modules"),
+          // (mounted read-only inside the jail).
+          NODE_PATH: isolation.mode === "bwrap" ? "/node_modules" : nodeModules,
+          PYTHONPATH: isolation.mode === "bwrap" ? "" : nodeModules,
         } as unknown as NodeJS.ProcessEnv,
       });
 
       let stdout = "";
       let stderr = "";
       let timedOut = false;
+      let settled = false;
+      const killTree = (sig: NodeJS.Signals) => {
+        try {
+          if (child.pid) process.kill(-child.pid, sig);
+        } catch {
+          try {
+            child.kill(sig);
+          } catch {
+            /* already gone */
+          }
+        }
+      };
       const timer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGKILL");
+        killTree("SIGKILL");
+        // Backstop: if a grandchild escaped the group and keeps the pipes open,
+        // report the timeout instead of hanging the request forever.
+        setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          resolve(finish(null, `timed out after ${timeoutMs}ms and was killed`, stdout, stderr, true));
+        }, 1500);
       }, timeoutMs);
 
       child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
       child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
       child.on("error", (e) => {
         clearTimeout(timer);
+        if (settled) return;
+        settled = true;
         resolve(finish(null, `failed to start ${argv[0]}: ${e.message}`, stdout, stderr, false));
       });
       child.on("close", async (exitCode) => {
         clearTimeout(timer);
+        if (settled) return;
+        settled = true;
         // Read generated artifacts back before the temp dir is removed so
         // xlsx/docx/pptx (binary) files can reach the client.
         const captured = input.captureFiles ? await readProduced(dir, ingestedFiles) : undefined;

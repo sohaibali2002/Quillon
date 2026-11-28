@@ -2,6 +2,7 @@
 // (streamable HTTP, SSE or stdio), discovers their tools and merges them into
 // the chat/agent tool loop through @ai-sdk/mcp.
 import { createMCPClient } from "@ai-sdk/mcp";
+import { assertPublicDestination, egressAllowlist, guardedFetch, urlCredentialReason } from "@/lib/net-guard";
 import { StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
 import type { ToolSet } from "ai";
 import { createHash, randomUUID } from "node:crypto";
@@ -67,14 +68,14 @@ export function getMcpServer(id: string): McpServer | null {
   return row ? fromRow(row) : null;
 }
 
-export function addMcpServer(input: {
+export async function addMcpServer(input: {
   name: string;
   transport: McpTransportType;
   url?: string;
   command?: string;
   args?: string[];
   env?: Record<string, string>;
-}): McpServer {
+}): Promise<McpServer> {
   const name = input.name.trim().slice(0, 80);
   if (!name) throw new Error("Server name is required.");
   if (input.transport !== "stdio") {
@@ -82,10 +83,14 @@ export function addMcpServer(input: {
       throw new Error(`${input.transport} transport needs an http(s) url.`);
     }
     validateMcpUrl(input.url);
+    // Registration checks DNS now so a hostname that only resolves to internal
+    // addresses never reaches the database; the transport re-checks per connect.
+    await assertPublicDestination(input.url, { allowPrivate: localMcpAllowed() });
   } else if (!input.command?.trim()) {
     throw new Error("stdio transport needs a command.");
   } else {
     validateStdioCommand(input.command.trim());
+    validateStdioArgs(input.command.trim(), input.args ?? []);
   }
   const server: McpServer = {
     id: randomUUID(),
@@ -152,16 +157,18 @@ export function validateMcpUrl(url: string): void {
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new Error("MCP url must use http(s).");
   }
-  if (/^169\.254\.169\.254/.test(parsed.hostname) || parsed.hostname === "metadata.google.internal") {
-    throw new Error("MCP url points at a cloud metadata endpoint, which is not allowed.");
-  }
-  const allow = (process.env.QUILLON_MCP_ALLOWED_HOSTS ?? "")
-    .split(",")
-    .map((h) => h.trim().toLowerCase())
-    .filter(Boolean);
-  if (allow.length && !allow.includes(parsed.hostname.toLowerCase())) {
+  const credential = urlCredentialReason(parsed);
+  if (credential) throw new Error(credential);
+  const allow = egressAllowlist();
+  const hostname = parsed.hostname.toLowerCase().replace(/\.+$/, "");
+  if (allow.length && !allow.some((h) => hostname === h || hostname.endsWith(`.${h}`))) {
     throw new Error(`MCP host "${parsed.hostname}" is not on QUILLON_MCP_ALLOWED_HOSTS.`);
   }
+}
+
+/** Local/private MCP servers are opt-in; the default policy is public egress only. */
+function localMcpAllowed(): boolean {
+  return process.env.QUILLON_MCP_ALLOW_PRIVATE === "1";
 }
 
 const DEFAULT_STDIO_COMMANDS = ["node", "npx", "uvx", "python3", "docker"];
@@ -177,6 +184,61 @@ function validateStdioCommand(command: string): void {
     throw new Error(
       `stdio command "${command}" is not on the allowlist (QUILLON_MCP_STDIO_COMMANDS).`,
     );
+  }
+}
+
+// An allowlisted executable is not automatically safe: what matters is the
+// arguments it is given. These are the flags that would hand a container the
+// host (or its credentials) and the credential patterns that belong in env.
+const DANGEROUS_CONTAINER_FLAGS: RegExp[] = [
+  /^--privileged$/,
+  /^--cap-add(=|$)/,
+  /^--net(work)?=host$/,
+  /^--pid=host$/,
+  /^--ipc=host$/,
+  /^--userns=host$/,
+  /^--security-opt(=|$)/,
+  /^--device(=|$)/,
+  /^--mount(=|$)/,
+  /^--volumes-from(=|$)/,
+  /^-v$/,
+  /^--volume(=|$)/,
+];
+const PROTECTED_MOUNT = /(^|[=:,])(\/|~\/|\/var\/run|\/etc|\/proc|\/sys|docker\.sock|\.ssh|\.aws|\.gnupg|\.config)/i;
+
+function looksLikeSecret(arg: string): boolean {
+  if (/^--?(api[-_]?key|token|secret|password|passwd|auth|authorization|bearer)(=|:|$)/i.test(arg)) return true;
+  return /\b(sk-[A-Za-z0-9]{12,}|ghp_[A-Za-z0-9]{12,}|xox[abp]-[A-Za-z0-9-]{10,}|Bearer\s+[A-Za-z0-9._-]{12,})/.test(arg);
+}
+
+export function validateStdioArgs(command: string, args: string[]): void {
+  const base = command.split("/").pop() ?? command;
+  for (const arg of args) {
+    if (arg.length > 500) throw new Error("stdio argument is too long.");
+    if (/[\u0000\n\r]/.test(arg)) throw new Error("stdio arguments must not contain control characters.");
+    if (looksLikeSecret(arg)) {
+      throw new Error(
+        "stdio arguments appear to contain a credential; pass secrets through the encrypted env field instead.",
+      );
+    }
+    if (base === "docker") {
+      if (DANGEROUS_CONTAINER_FLAGS.some((re) => re.test(arg))) {
+        throw new Error(`docker argument "${arg}" grants host access and is not allowed.`);
+      }
+      if (PROTECTED_MOUNT.test(arg)) {
+        throw new Error(`docker argument "${arg}" mounts a protected host path and is not allowed.`);
+      }
+    }
+  }
+  // A registry launcher without a pinned version can change after approval.
+  if (process.env.QUILLON_MCP_STRICT_PINS === "0") return;
+  if (base === "npx" || base === "uvx") {
+    const pkg = args.find((a) => !a.startsWith("-") && !/^(run|exec|--yes|-y|--no-install)$/.test(a));
+    if (pkg && !/[@=]\d/.test(pkg)) {
+      throw new Error(
+        `${base} package "${pkg}" must pin a version (name@1.2.3) so an approved server cannot change underneath you. Set QUILLON_MCP_STRICT_PINS=0 to opt out.`,
+      );
+    }
   }
 }
 
@@ -262,7 +324,10 @@ function transportFor(server: McpServer) {
     : {
         type: server.transport,
         url: server.url!,
-        redirect: "follow" as const,
+        // Redirects are followed by the guard, which revalidates every hop
+        // instead of letting the transport chase a 30x into the internal network.
+        fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+          guardedFetch(input, { ...init, policy: { allowPrivate: localMcpAllowed() } }),
       };
 }
 
@@ -271,6 +336,11 @@ async function acquireClient(server: McpServer): Promise<McpClient> {
   const pooled = clientPool.get(server.id);
   if (pooled && pooled.fingerprint === fingerprint) return pooled.client;
   if (pooled) dropClient(server.id);
+  if (server.transport !== "stdio" && server.url) {
+    // Re-resolve at connect time: a hostname that passed registration can be
+    // repointed afterwards, and this is the check the socket will follow.
+    await assertPublicDestination(server.url, { allowPrivate: localMcpAllowed() });
+  }
   const client = await withTimeout(
     createMCPClient({ transport: transportFor(server), clientName: "quillon-workbench" }),
     `connect to "${server.name}"`,
@@ -327,8 +397,47 @@ async function serverToolDescriptors(
       ]),
     );
   });
+  verifyToolPin(server, descriptors);
   toolCache.set(server.id, { fingerprint, at: Date.now(), tools: descriptors });
   return descriptors;
+}
+
+function toolPinHash(descriptors: Record<string, { description?: string; inputSchema?: unknown }>): string {
+  const canonical = Object.keys(descriptors)
+    .sort()
+    .map((name) => [name, descriptors[name].description ?? "", descriptors[name].inputSchema ?? {}]);
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+/**
+ * Trust on first use, then detect drift. A server that redefines its tool names,
+ * descriptions or schemas after approval must be approved again, so a
+ * compromised server cannot quietly repurpose a tool the model already trusts.
+ */
+export function verifyToolPin(
+  server: McpServer,
+  descriptors: Record<string, { description?: string; inputSchema?: unknown }>,
+): void {
+  const hash = toolPinHash(descriptors);
+  const row = getDb().prepare("SELECT tool_pin FROM mcp_servers WHERE id = ?").get(server.id) as
+    | { tool_pin: string | null }
+    | undefined;
+  if (!row) return;
+  if (!row.tool_pin) {
+    getDb().prepare("UPDATE mcp_servers SET tool_pin = ? WHERE id = ?").run(hash, server.id);
+    return;
+  }
+  if (row.tool_pin !== hash) {
+    throw new Error(
+      `MCP server "${server.name}" changed its tool definitions since approval and is disabled until an admin re-approves it.`,
+    );
+  }
+}
+
+/** Clears the pin so the next discovery records the current tool definitions. */
+export function approveMcpToolPin(id: string): void {
+  getDb().prepare("UPDATE mcp_servers SET tool_pin = NULL WHERE id = ?").run(id);
+  invalidateMcpCache();
 }
 
 function serverToolset(

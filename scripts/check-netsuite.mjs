@@ -61,9 +61,13 @@ const server = (await import("node:http")).createServer((req, res) => {
       verifyAuth(req, req.url);
       if (state.suiteqlHits === 1) {
         respond(res, 200, { items: [{ id: 1, entityName: "A" }, { id: 2, entityName: "B" }], hasMore: true, totalResults: 3 });
-      } else {
+      } else if (state.suiteqlHits === 2) {
         assert.equal(url.searchParams.get("offset"), "2");
         respond(res, 200, { items: [{ id: 3, entityName: "C" }], hasMore: false, totalResults: 3 });
+      } else {
+        // the read-only check's single-legitimate-query case
+        assert.equal(url.searchParams.get("offset"), "0");
+        respond(res, 200, { items: [], hasMore: false, totalResults: 0 });
       }
       return;
     }
@@ -181,6 +185,19 @@ assert.deepEqual(q.data.items.map((r) => r.id), [1, 2, 3]);
 assert.equal(q.data.fetched, 3);
 assert.equal(q.data.hasMore, undefined);
 console.log("PASS suiteql: offset paged across 2 pages, 3 rows, OAuth signature verified");
+
+// SuiteQL is read-only: DML/DDL never reaches the network
+{
+  const hits = state.suiteqlHits;
+  const denied = await ns.suiteQL("DELETE FROM customer WHERE id = 42");
+  assert.equal(denied.ok, false);
+  const sneaky = await ns.suiteQL("SELECT id FROM customer; UPDATE customer SET companyName = 'x'");
+  assert.equal(sneaky.ok, false);
+  const stringy = await ns.suiteQL("SELECT id FROM customer WHERE companyName = 'delete me'");
+  assert.equal(stringy.ok, true);
+  assert.equal(state.suiteqlHits, hits + 1); // only the legitimate SELECT hit the API
+  console.log("PASS suiteql: write/DDL/multi-statement queries refused before the request");
+}
 
 // record CRUD
 const g = await ns.request("GET", "record/v1/customer/42");

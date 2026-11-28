@@ -15,6 +15,7 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readToken } from "./connectors";
+import { safeErrorMessage } from "./sanitize";
 
 export interface CostpointCred {
   baseUrl: string;
@@ -231,7 +232,55 @@ function client(): { cp: CostpointClient } | { error: string } {
 }
 
 function wrap(e: unknown) {
-  return { ok: false as const, error: e instanceof Error ? e.message : "Costpoint request failed" };
+  return { ok: false as const, error: safeErrorMessage(e, "Costpoint request failed") };
+}
+
+/** Patches one record only against its **live** ETag. The record is re-read
+ *  immediately before the write, so a change that landed between a model's
+ *  earlier read and this write comes back as 412 instead of being overwritten,
+ *  and `If-Match: *` (unconditional write) is never sent. */
+export async function patchRecordGuarded(
+  cp: CostpointClient,
+  entityName: string,
+  key: string | number,
+  fields: Record<string, unknown>,
+): Promise<{ ok: boolean; error?: string }> {
+  const live = await cp.request("GET", keyPath(entityName, key));
+  if (!live.ok) return { ok: false, error: extractCostpointError(live.data) ?? `HTTP ${live.status}` };
+  const ifMatch = live.etag;
+  if (!ifMatch || ifMatch === "*") {
+    return { ok: false, error: "No ETag available; unconditional updates are refused." };
+  }
+  const r = await cp.request("PATCH", keyPath(entityName, key), {
+    body: fields,
+    headers: { "if-match": ifMatch },
+  });
+  return r.ok ? { ok: true } : { ok: false, error: extractCostpointError(r.data) ?? `HTTP ${r.status}` };
+}
+
+/** Deletes one record only against a real ETag — supplied by the caller, or
+ *  read fresh here. Wildcard deletes and deletes with no ETag are refused. */
+export async function deleteRecordGuarded(
+  cp: CostpointClient,
+  entityName: string,
+  key: string | number,
+  etag?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  if (etag === "*") return { ok: false, error: "Wildcard If-Match is not allowed for deletes." };
+  let ifMatch = etag;
+  if (!ifMatch) {
+    const live = await cp.request("GET", keyPath(entityName, key));
+    if (!live.ok) return { ok: false, error: extractCostpointError(live.data) ?? `HTTP ${live.status}` };
+    ifMatch = live.etag ?? undefined;
+  }
+  if (!ifMatch || ifMatch === "*") {
+    return {
+      ok: false,
+      error: "No ETag available for this record, so an unconditional delete is refused. Re-read the record and retry.",
+    };
+  }
+  const r = await cp.request("DELETE", keyPath(entityName, key), { headers: { "if-match": ifMatch } });
+  return r.ok ? { ok: true } : { ok: false, error: extractCostpointError(r.data) ?? `HTTP ${r.status}` };
 }
 
 const entity = z
@@ -335,12 +384,12 @@ export function buildCostpointTools(): Record<string, Tool> {
 
   t(
     "update_record",
-    "Patch one record by key. Pass the ETag from get_record for optimistic concurrency; omitted ETags send If-Match: *.",
+    "Patch one record by key. The ETag from a prior get_record is required: a wildcard write would overwrite changes made since the read.",
     z.object({
       entity,
       key,
       fields: fieldsSchema,
-      etag: z.string().optional().describe("ETag from a prior get_record; sent as If-Match"),
+      etag: z.string().min(1).describe("ETag from a prior get_record; sent as If-Match"),
     }),
     async (i) => {
       const p = client();
@@ -349,12 +398,15 @@ export function buildCostpointTools(): Record<string, Tool> {
         entity: string;
         key: string | number;
         fields: Record<string, unknown>;
-        etag?: string;
+        etag: string;
       };
+      if (!etag || etag === "*") {
+        return { ok: false, error: "An ETag from a prior get_record is required for updates; wildcard writes are not allowed." };
+      }
       try {
         const r = await p.cp.request("PATCH", keyPath(e, k), {
           body: fields,
-          headers: { "if-match": etag ?? "*" },
+          headers: { "if-match": etag },
         });
         return r.ok ? { ok: true, key: k } : { ok: false, error: fetchErr(r) };
       } catch (e2) {
@@ -365,15 +417,19 @@ export function buildCostpointTools(): Record<string, Tool> {
 
   t(
     "delete_record",
-    "Delete one record by key.",
-    z.object({ entity, key }),
+    "Delete one record by key. Always sends the current If-Match ETag: the record is read first (or an explicit etag is supplied) so a concurrent edit can never be deleted blindly.",
+    z.object({
+      entity,
+      key,
+      etag: z.string().optional().describe("Optional ETag from get_record; read fresh when omitted"),
+    }),
     async (i) => {
       const p = client();
       if ("error" in p) return p;
-      const { entity: e, key: k } = i as { entity: string; key: string | number };
+      const { entity: e, key: k, etag } = i as { entity: string; key: string | number; etag?: string };
       try {
-        const r = await p.cp.request("DELETE", keyPath(e, k), { headers: { "if-match": "*" } });
-        return r.ok ? { ok: true, key: k } : { ok: false, error: fetchErr(r) };
+        const r = await deleteRecordGuarded(p.cp, e, k, etag);
+        return r.ok ? { ok: true, key: k } : { ok: false, error: r.error ?? "delete failed" };
       } catch (e2) {
         return wrap(e2);
       }
@@ -401,13 +457,12 @@ export function buildCostpointTools(): Record<string, Tool> {
       const results: { key: string; ok: boolean; error?: string }[] = [];
       for (const rec of records) {
         try {
-          const r = await p.cp.request("PATCH", keyPath(e, rec.key), {
-            body: rec.fields,
-            headers: { "if-match": "*" },
-          });
-          results.push({ key: String(rec.key), ok: r.ok, error: r.ok ? undefined : fetchErr(r) });
+          // Read the live ETag first: a batch patch without If-Match silently
+          // overwrites whatever landed between the read and the write.
+          const r = await patchRecordGuarded(p.cp, e, rec.key, rec.fields);
+          results.push({ key: String(rec.key), ok: r.ok, error: r.error });
         } catch (e2) {
-          results.push({ key: String(rec.key), ok: false, error: e2 instanceof Error ? e2.message : "failed" });
+          results.push({ key: String(rec.key), ok: false, error: safeErrorMessage(e2, "failed") });
         }
       }
       return {

@@ -6,8 +6,10 @@ async function secure(req: Request) {
 
 import { z } from "zod";
 import { guard } from "@/lib/guard";
+import { safeErrorMessage } from "@/lib/sanitize";
 import {
   addMcpServer,
+  approveMcpToolPin,
   callMcpTool,
   deleteMcpServer,
   discoverAllTools,
@@ -64,7 +66,11 @@ const callSchema = z
   })
   .strict();
 
-const bodySchema = z.discriminatedUnion("action", [addSchema, toggleSchema, callSchema]);
+const approveSchema = z
+  .object({ action: z.literal("approve-tools"), id: z.string().min(1) })
+  .strict();
+
+const bodySchema = z.discriminatedUnion("action", [addSchema, toggleSchema, callSchema, approveSchema]);
 
 export async function POST(req: Request) {
   const denied = await secure(req);
@@ -82,16 +88,28 @@ export async function POST(req: Request) {
 
   if (data.action === "add") {
     try {
-      const server = addMcpServer(data);
+      const server = await addMcpServer(data);
       return Response.json({ server }, { status: 201 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const status = /UNIQUE/i.test(message) ? 409 : 400;
       return Response.json(
-        { error: { message: status === 409 ? "A server with that name already exists." : message } },
+        {
+          error: {
+            message:
+              status === 409
+                ? "A server with that name already exists."
+                : safeErrorMessage(err, "Could not add the MCP server."),
+          },
+        },
         { status },
       );
     }
+  }
+
+  if (data.action === "approve-tools") {
+    approveMcpToolPin(data.id);
+    return Response.json({ ok: true });
   }
 
   if (data.action === "toggle") {

@@ -11,7 +11,11 @@ export function roleOf(session: { roles?: string[] }): Role {
   const roles = session.roles ?? [];
   if (roles.includes("admin")) return "admin";
   if (roles.includes("viewer")) return "viewer";
-  return "member";
+  // A session with no role claim at all is a signed-in user (member). Any
+  // unrecognised role is not evidence of write access, so it fails closed to
+  // viewer rather than silently granting member.
+  if (roles.length === 0) return "member";
+  return "viewer";
 }
 
 // Tenant key for per-org data (knowledge graph, audit rows). Authenticated

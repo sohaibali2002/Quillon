@@ -350,4 +350,20 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    id: 15,
+    name: "security-hardening",
+    sql: `
+      ALTER TABLE mcp_servers ADD COLUMN tool_pin TEXT;
+      CREATE TABLE session_revocations (
+        subject TEXT PRIMARY KEY,
+        revoked_before INTEGER NOT NULL DEFAULT 0,
+        reason TEXT,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      ALTER TABLE audit_log ADD COLUMN prev_hash TEXT;
+      ALTER TABLE audit_log ADD COLUMN hash TEXT;
+      CREATE INDEX IF NOT EXISTS audit_log_org ON audit_log (org, id);
+    `,
+  },
 ];

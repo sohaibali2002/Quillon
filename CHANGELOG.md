@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-11-28
+
+Security hardening across every trust boundary, with a new regression suite
+(`npm run check:security`, 19 checks, wired into CI).
+
+- `src/lib/sanitize.ts` — secret redaction with a `{ keepBase64 }` mode (generated
+  file data URLs survive), bare `token=` patterns, `safeErrorMessage` that cuts
+  **any** `scheme://` URL including `postgres://user:pw@host/db`, HTML/SVG
+  sanitisers, CSV formula neutralisation and `isActiveMediaType`.
+- `src/lib/tool-policy.ts` — the single tool wrapper now deep-redacts every tool
+  result before it reaches the model and replaces tool errors with short
+  sanitised messages, so chat, agent, connector, ERP and MCP tools are all
+  covered in one place.
+- `src/app/api/files/route.ts` — HTML/SVG/XML attachments are served as
+  `attachment` inside `Content-Security-Policy: sandbox` with `nosniff` and
+  sanitised filenames instead of rendering on the app origin.
+- `src/lib/connector-sdk.ts`, `salesforce.ts`, `hubspot.ts`, `netsuite.ts`,
+  `costpoint.ts`, `openrouter.ts` — platform error bodies go through
+  `safeErrorMessage` (no URLs, tokens or stack detail reach the model).
+- `src/lib/costpoint.ts` — `If-Match: *` is gone: delete and batch patch re-read
+  the live ETag and refuse when the server issues none (`deleteRecordGuarded`,
+  `patchRecordGuarded`).
+- `src/lib/netsuite.ts` — SuiteQL is read-only: non-SELECT, DDL and
+  multi-statement queries are refused in the client before any request
+  (`checkReadOnlySuiteQL`).
+- `src/lib/net-guard.ts` — fixed a real SSRF hole: IPv4-mapped IPv6
+  (`::ffff:127.0.0.1`) and IPv4-compatible addresses were not blocked.
+- `src/lib/rbac.ts` — an unrecognised role claim now resolves to viewer (fail
+  closed) instead of member.
+
 ## 2026-11-27
 
 - Removed the fabricated demo tools (`weather`, `convertTemperature`,

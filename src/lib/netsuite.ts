@@ -15,6 +15,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readToken } from "./connectors";
+import { safeErrorMessage } from "./sanitize";
 
 const HOST_SUFFIX = ".suitetalk.api.netsuite.com";
 
@@ -129,6 +130,8 @@ export class NetSuiteClient {
    *  100,000 rows and one page at limit <= 100; we cap maxRows at 10,000 to
    *  keep tool outputs bounded. */
   async suiteQL(q: string, maxRows = 1000) {
+    const check = checkReadOnlySuiteQL(q);
+    if (!check.ok) return { status: 400, ok: false, data: { title: check.reason } };
     const cap = Math.min(10_000, Math.max(1, maxRows));
     const items: unknown[] = [];
     let offset = 0;
@@ -146,6 +149,22 @@ export class NetSuiteClient {
     }
     return { status: 200, ok: true, data: { items, fetched: items.length, truncated: items.length >= cap } };
   }
+}
+
+/** SuiteQL surfaces a SQL console over a privileged NetSuite role: only read
+ *  statements may run through it, so a model (or a prompt injection) cannot
+ *  issue DML/DDL with the integration's credentials. */
+const WRITE_VERBS = /\b(insert|update|delete|upsert|merge|create|drop|alter|truncate|grant|revoke|commit|rollback|execute|exec|begin|declare)\b/i;
+
+export function checkReadOnlySuiteQL(q: string): { ok: true } | { ok: false; reason: string } {
+  const sql = q
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--[^\n]*/g, " ")
+    .replace(/'(?:[^']|'')*'/g, "''");
+  if (!/^\s*(select|with)\b/i.test(sql)) return { ok: false, reason: "SuiteQL is read-only here: only SELECT/WITH statements are allowed." };
+  if (WRITE_VERBS.test(sql)) return { ok: false, reason: "SuiteQL is read-only here: write/DDL keywords are refused." };
+  if (/;/.test(sql.trim().replace(/;\s*$/, ""))) return { ok: false, reason: "SuiteQL is read-only here: one statement per call." };
+  return { ok: true };
 }
 
 /** NetSuite REST error bodies:
@@ -184,7 +203,7 @@ function client(): { ns: NetSuiteClient } | { error: string } {
 }
 
 function wrap(e: unknown) {
-  return { ok: false as const, error: e instanceof Error ? e.message : "NetSuite request failed" };
+  return { ok: false as const, error: safeErrorMessage(e, "NetSuite request failed") };
 }
 
 const recordType = z
@@ -236,6 +255,8 @@ export function buildNetSuiteTools(): Record<string, Tool> {
       const p = client();
       if ("error" in p) return p;
       const { q, maxRows } = i as { q: string; maxRows?: number };
+      const verdict = checkReadOnlySuiteQL(q);
+      if (!verdict.ok) return { ok: false, error: verdict.reason };
       try {
         const r = await p.ns.suiteQL(q, maxRows);
         return r.ok ? { ok: true, ...(r.data as Record<string, unknown>) } : { ok: false, error: fetchErr(r) };

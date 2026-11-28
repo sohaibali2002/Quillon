@@ -8,6 +8,7 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readCredential, readToken } from "@/lib/connectors";
+import { safeErrorMessage } from "@/lib/sanitize";
 
 export type ParamType = "string" | "number" | "boolean";
 
@@ -159,21 +160,26 @@ export function buildPlatformTools(recipe: PlatformRecipe): Record<string, Tool>
           }
           const data: unknown = await res.json().catch(() => ({}));
           if (!res.ok) {
+            // Platform error bodies echo request URLs, headers and tokens; only
+            // a short sanitised message reaches the model.
             const detail = extractApiError(data);
             return {
               ok: false,
-              error: `${recipe.name} returned ${res.status}${detail ? `: ${detail}` : ""}`,
+              error: safeErrorMessage(`${recipe.name} returned ${res.status}${detail ? `: ${detail}` : ""}`),
               status: res.status,
             };
           }
           // Some platforms (Slack) report failures inside a 200 response.
           const okFlag = (data as Record<string, unknown>)?.ok;
           if (okFlag === false) {
-            return { ok: false, error: `${recipe.name} error: ${extractApiError(data) ?? "request rejected"}` };
+            return {
+              ok: false,
+              error: safeErrorMessage(`${recipe.name} error: ${extractApiError(data) ?? "request rejected"}`),
+            };
           }
           return { ok: true, data };
         } catch (e) {
-          return { ok: false, error: e instanceof Error ? e.message : "request failed" };
+          return { ok: false, error: safeErrorMessage(e, `${recipe.name} request failed.`) };
         }
       },
     });

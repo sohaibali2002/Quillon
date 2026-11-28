@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { SESSION_COOKIE, PKCE_COOKIE } from "@/lib/auth";
+import { SESSION_COOKIE, PKCE_COOKIE, readSession, revokeSessions } from "@/lib/auth";
 
 export async function POST() {
+  // Delete the cookie and cut off the token server-side: a copied cookie stays
+  // valid for its full lifetime otherwise.
+  const session = await readSession();
+  if (session) revokeSessions(session.sub);
   const jar = await cookies();
   jar.delete(SESSION_COOKIE);
   jar.delete(PKCE_COOKIE);

@@ -19,6 +19,8 @@ import { memoryContext } from "@/lib/memory";
 import { listProviders, resolveModelAny } from "@/lib/models";
 import { skillsContext } from "@/lib/skills";
 import { unifiedToolset } from "@/lib/tool-registry";
+import { enforceToolAuthority } from "@/lib/tool-authority";
+import { roleOf } from "@/lib/rbac";
 import { createOrchestrateTool } from "@/lib/orchestrator";
 import { enforceCapabilities, selectRelevantTools, withToolTimeouts } from "@/lib/tool-policy";
 
@@ -140,12 +142,15 @@ export async function POST(req: Request) {
       .join(" ") ?? "";
 
   // Policy: capability grants, relevance shortlist, then one timeout per call.
-  const toolset = {
-    ...unified.tools,
-    // Cross-platform pipelines: the model can delegate a whole multi-tool
-    // job (fetch → enrich → document) to the orchestrator in one call.
-    orchestrate: createOrchestrateTool(model),
-  };
+  const toolset = enforceToolAuthority(
+    {
+      ...unified.tools,
+      // Cross-platform pipelines: the model can delegate a whole multi-tool
+      // job (fetch → enrich → document) to the orchestrator in one call.
+      orchestrate: createOrchestrateTool(model),
+    },
+    roleOf(denied),
+  );
   const tools = withToolTimeouts(
     selectRelevantTools(
       enforceCapabilities(toolset, unified.catalog, conversationId),

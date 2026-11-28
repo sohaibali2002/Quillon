@@ -9,6 +9,7 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readToken } from "./connectors";
+import { safeErrorMessage } from "./sanitize";
 
 const API_VERSION = "v60.0";
 
@@ -231,7 +232,7 @@ function client(): { sf: SfClient } | { error: string } {
 }
 
 function wrap(e: unknown) {
-  return { ok: false as const, error: e instanceof Error ? e.message : "Salesforce request failed" };
+  return { ok: false as const, error: safeErrorMessage(e, "Salesforce request failed") };
 }
 
 const fieldsSchema = z.record(z.string(), z.unknown()).describe("Field values, e.g. {\"Name\":\"Acme\",\"Industry\":\"Tech\"}");

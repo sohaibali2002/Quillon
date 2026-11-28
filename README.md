@@ -80,7 +80,19 @@ write in a plain app, with an inspectable surface for every capability.
   in formula columns, formula-pattern deviations), decks (font drift,
   overflow, missing titles) and documents (citations, structure, date
   consistency) get auditable pass/warn/fail reports (`/api/verify`).
-
+- **Data-boundary guards** (`src/lib/sanitize.ts`, regression suite
+  `npm run check:security`): every tool result is secret-redacted before it
+  reaches the model, tool errors become short sanitised sentences with no
+  internal URLs or connection strings, HTML/SVG/XML attachments are served as
+  sandboxed downloads instead of rendering on the app origin, and CSV exports
+  are formula-neutralised.
+- **Guarded writes** — ERP updates and deletes re-read the record's live ETag
+  before writing and refuse when the server issues none (`If-Match: *` is never
+  sent); NetSuite SuiteQL runs read statements only, enforced in the client
+  before the request.
+- **SSRF defence** — `src/lib/net-guard.ts` blocks loopback, private,
+  link-local, CGNAT, metadata and NAT64/6to4 destinations, including
+  IPv4-mapped IPv6 (`::ffff:127.0.0.1`), and revalidates every redirect hop.
 
 ## Quick start
 
@@ -193,9 +205,10 @@ assertions, + contract pin of all 93 operations against the official spec).
 ## Development
 
 ```bash
-npx tsc --noEmit      # type check
-npm run build         # production build
-node tests/smoke.mjs  # route + UI smoke tests (no key needed)
+npx tsc --noEmit           # type check
+npm run build              # production build
+npm run check:security     # trust-boundary suite (redaction, SSRF, RBAC, guarded writes)
+node tests/smoke.mjs       # route + UI smoke tests (no key needed)
 ```
 
 ## License

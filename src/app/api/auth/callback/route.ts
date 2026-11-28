@@ -72,6 +72,7 @@ export async function GET(req: NextRequest) {
     name: String(claims.name ?? claims.preferred_username ?? "Signed-in user"),
     email: String(claims.email ?? claims.preferred_username ?? ""),
     roles: Array.isArray(claims.roles) ? claims.roles.map(String) : [],
+    iat: now,
     exp: now + Math.min(tokens.expires_in ?? 3600, 60 * 60 * 12),
   };
 

@@ -5,6 +5,7 @@
 // and selection accuracy on every turn.
 import type { Tool, ToolSet } from "ai";
 import { checkCapability } from "@/lib/capability";
+import { redactDeep, safeErrorMessage } from "@/lib/sanitize";
 import type { ToolCatalogEntry } from "@/lib/tool-registry";
 
 export const TOOL_TIMEOUT_MS = 30_000;
@@ -39,7 +40,7 @@ export function withToolTimeouts(tools: ToolSet, timeoutMs = TOOL_TIMEOUT_MS): T
       execute: async (input: never, options: never) => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          return await Promise.race([
+          const result = await Promise.race([
             execute(input, options),
             new Promise((_, reject) => {
               timer = setTimeout(
@@ -48,6 +49,15 @@ export function withToolTimeouts(tools: ToolSet, timeoutMs = TOOL_TIMEOUT_MS): T
               );
             }),
           ]);
+          // Tool output is attacker-adjacent (third-party API bodies, file
+          // contents) and goes straight into the model context: scrub any
+          // credential this process holds before it gets there. Base64 runs
+          // stay intact so generated-file data URLs still download.
+          return redactDeep(result, { keepBase64: true });
+        } catch (err) {
+          // Provider and DB errors quote URLs, query text and connection
+          // strings; the model gets a short, sanitised sentence instead.
+          throw new Error(safeErrorMessage(err, `Tool "${name}" failed.`));
         } finally {
           if (timer) clearTimeout(timer);
         }

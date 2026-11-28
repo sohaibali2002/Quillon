@@ -22,6 +22,8 @@ import { createMemoryTools, memoryContext } from "@/lib/memory";
 import { resolveModelAny as resolveModel } from "@/lib/models";
 import { skillsContext } from "@/lib/skills";
 import { unifiedToolset } from "@/lib/tool-registry";
+import { enforceToolAuthority } from "@/lib/tool-authority";
+import { roleOf } from "@/lib/rbac";
 import { enforceCapabilities, selectRelevantTools, withToolTimeouts } from "@/lib/tool-policy";
 import { createOrchestrateTool } from "@/lib/orchestrator";
 
@@ -110,10 +112,13 @@ export async function POST(req: Request) {
   const toolset = withToolTimeouts(
     selectRelevantTools(
       enforceCapabilities(
-        {
-          ...unified.tools,
-          orchestrate: createOrchestrateTool(body.model),
-        },
+        enforceToolAuthority(
+          {
+            ...unified.tools,
+            orchestrate: createOrchestrateTool(body.model),
+          },
+          roleOf(denied),
+        ),
         unified.catalog,
         conversationId,
       ),

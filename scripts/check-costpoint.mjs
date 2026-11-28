@@ -9,7 +9,7 @@ import { register } from "node:module";
 
 register("./ts-resolve.mjs", import.meta.url);
 
-const { CostpointClient, parseCostpointCredential, extractCostpointError, keyLiteral, keyPath, serviceRootOf } =
+const { CostpointClient, parseCostpointCredential, extractCostpointError, keyLiteral, keyPath, serviceRootOf, deleteRecordGuarded, patchRecordGuarded } =
   await import("../src/lib/costpoint.ts");
 
 let passed = 0;
@@ -98,10 +98,20 @@ const server = createServer((req, res) => {
       return reply(200, { PROJECT_ID: "P24-1001", DESCRIPTION: "Bridge repair", ORG_ID: "100" }, { etag: 'W/"v3"' });
     }
     if (rest === "/PROJECT('P24-2002')") {
+      if (req.method === "GET") return reply(200, { PROJECT_ID: "P24-2002" }, { etag: 'W/"v3"' });
       patched.push(raw);
       return reply(204, null, { etag: 'W/"v4"' });
     }
     if (rest === "/PROJECT('P24-4044')") return reply(404, { error: { code: "404", message: { lang: "en", value: "no such project" } } });
+    if (rest === "/PROJECT('P24-7777')") {
+      if (req.method === "DELETE") return reply(204, null);
+      return reply(200, { PROJECT_ID: "P24-7777" }, { etag: 'W/"v9"' });
+    }
+    if (rest === "/PROJECT('P24-8888')") {
+      // Server that never hands out an ETag: unconditional writes must be refused.
+      if (req.method === "DELETE") return reply(204, null);
+      return reply(200, { PROJECT_ID: "P24-8888" });
+    }
     if (rest === "/LABOR_ACTUALS") {
       labors.push(raw);
       return reply(201, { EMPE_ID: JSON.parse(raw).EMPE_ID });
@@ -164,13 +174,18 @@ check("batch_upsert continues past failures with per-record results", async () =
   const res = await (async () => {
     const out = [];
     for (const k of ["P24-2002", "P24-4044", "P24-2002"]) {
-      const r = await c2.request("PATCH", `PROJECT(${keyLiteral(k)})`, { body: { DESCRIPTION: "y" }, headers: { "if-match": "*" } });
+      const r = await patchRecordGuarded(c2, "PROJECT", k, { DESCRIPTION: "y" });
       out.push({ key: k, ok: r.ok });
     }
     return out;
   })();
   assert.deepEqual(res.map((x) => x.ok), [true, false, true]);
-  assert.equal(seen.filter((s) => s.method === "PATCH").length, 3);
+  // Every patch is preceded by a read that supplied its ETag.
+  assert.deepEqual(
+    seen.filter((s) => s.path.startsWith("/api/v1/PROJECT('P24-2002')")).map((s) => s.method),
+    ["GET", "PATCH", "GET", "PATCH"],
+  );
+  assert.equal(seen.some((s) => s.headers["if-match"] === "*"), false);
 });
 check("labor_entries posts mapped Costpoint fields", async () => {
   const r = await cp.request("POST", "LABOR_ACTUALS", {
@@ -206,6 +221,41 @@ check("API-key mode sends X-Api-Key and never requests a token", async () => {
 
 check("401 mid-run refreshes the token once and retries", () => {
   assert.equal(tokenRequests, 3); // cp grant + c2 grant + refresh grant after the 401
+});
+
+// ---------- security: guarded writes always carry a real ETag ----------
+check("guarded delete reads the ETag first and sends If-Match", async () => {
+  const before = seen.length;
+  const r = await deleteRecordGuarded(cp, "PROJECT", "P24-7777");
+  assert.equal(r.ok, true, r.error ?? "");
+  const ops = seen.slice(before).map((s) => s.method);
+  assert.deepEqual(ops, ["GET", "DELETE"]);
+  const del = seen.slice(before).find((s) => s.method === "DELETE");
+  assert.equal(del.headers["if-match"], 'W/"v9"');
+});
+check("wildcard If-Match is refused for deletes", async () => {
+  const before = seen.length;
+  const r = await deleteRecordGuarded(cp, "PROJECT", "P24-7777", "*");
+  assert.equal(r.ok, false);
+  assert.match(r.error, /Wildcard/);
+  assert.equal(seen.length, before); // nothing was sent
+});
+check("delete with no ETag available is refused, not sent unconditionally", async () => {
+  const before = seen.length;
+  const r = await deleteRecordGuarded(cp, "PROJECT", "P24-8888");
+  assert.equal(r.ok, false);
+  assert.match(r.error, /No ETag/);
+  assert.equal(seen.slice(before).some((s) => s.method === "DELETE"), false);
+});
+check("guarded patch reads the ETag first and sends If-Match", async () => {
+  const before = seen.length;
+  const r = await patchRecordGuarded(cp, "PROJECT", "P24-7777", { DESCRIPTION: "y" });
+  assert.equal(r.ok, true, r.error ?? "");
+  const p = seen.slice(before).find((s) => s.method === "PATCH");
+  assert.equal(p.headers["if-match"], 'W/"v9"');
+});
+check("no request in the suite ever used If-Match: *", () => {
+  assert.equal(seen.some((s) => s.headers["if-match"] === "*"), false);
 });
 chain.then(() => new Promise((r) => server.close(r))).then(() => {
   console.log(`${passed} passed${process.exitCode ? " (with failures)" : ""}`);

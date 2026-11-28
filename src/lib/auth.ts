@@ -12,6 +12,7 @@
 // Sessions are HMAC-signed cookies (no dependency on a session store).
 import { createHash, createHmac, timingSafeEqual, randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
+import { getDb } from "@/lib/db";
 import { requireSecret } from "@/lib/guard";
 
 export const SESSION_COOKIE = "quillon_session";
@@ -43,6 +44,8 @@ export type Session = {
   name: string;
   email: string;
   roles: string[];
+  /** Issued-at (seconds). Lets revocation cut off tokens minted before a point. */
+  iat?: number;
   exp: number;
 };
 
@@ -111,7 +114,39 @@ export function verify(token: string | undefined): Session | null {
 
 export async function readSession(): Promise<Session | null> {
   const jar = await cookies();
-  return verify(jar.get(SESSION_COOKIE)?.value);
+  const session = verify(jar.get(SESSION_COOKIE)?.value);
+  if (!session) return null;
+  return sessionRevoked(session) ? null : session;
+}
+
+export function sessionIssuedAt(session: Session): number {
+  return session.iat ?? session.exp - SESSION_TTL_S;
+}
+
+/**
+ * Signed cookies are stateless, so revocation is a server-side cut-off: a token
+ * minted at or before `revoked_before` no longer authenticates. Sign-out, role
+ * changes and account disablement all move that mark forward.
+ */
+export function revokeSessions(subject: string, reason = "sign-out"): void {
+  const now = Math.floor(Date.now() / 1000);
+  getDb()
+    .prepare(
+      `INSERT INTO session_revocations (subject, revoked_before, reason, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(subject) DO UPDATE SET
+         revoked_before = excluded.revoked_before,
+         reason = excluded.reason,
+         updated_at = excluded.updated_at`,
+    )
+    .run(subject, now, reason, new Date().toISOString());
+}
+
+export function sessionRevoked(session: Session): boolean {
+  const row = getDb()
+    .prepare("SELECT revoked_before FROM session_revocations WHERE subject = ?")
+    .get(session.sub) as { revoked_before: number } | undefined;
+  return Boolean(row && sessionIssuedAt(session) <= row.revoked_before);
 }
 
 export function sessionCookieOptions() {

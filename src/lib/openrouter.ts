@@ -12,6 +12,7 @@
 // Retry-After; ambiguous inference failures are never retried (double spend).
 import { tool, type Tool } from "ai";
 import { z } from "zod";
+import { safeErrorMessage } from "@/lib/sanitize";
 
 export const OPENROUTER_BASE_URL =
   process.env.OPENROUTER_BASE_URL?.replace(/\/+$/, "") || "https://openrouter.ai/api/v1";
@@ -479,7 +480,7 @@ export function openRouterClient(): { client: OpenRouterClient } | { error: stri
 }
 
 function wrap(e: unknown) {
-  return { ok: false as const, error: e instanceof Error ? e.message : "OpenRouter request failed" };
+  return { ok: false as const, error: safeErrorMessage(e, "OpenRouter request failed") };
 }
 
 const modelId = z
