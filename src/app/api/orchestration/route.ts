@@ -7,6 +7,7 @@
 // GET ?id= lists recent runs (durable) for the Govern-style status views.
 import { z } from "zod";
 import { guard, audit } from "@/lib/guard";
+import { principalForSession } from "@/lib/rbac";
 import { getRun, listRuns, tick } from "@/lib/durable";
 import {
   executePipeline,
@@ -22,13 +23,14 @@ export const maxDuration = 60;
 export async function GET(req: Request) {
   const gate = await guard(req);
   if (gate instanceof Response) return gate;
+  const tenant = principalForSession(gate).tenant;
   const id = new URL(req.url).searchParams.get("id");
   if (id) {
-    const run = getRun(id);
+    const run = getRun(id, tenant);
     if (!run) return Response.json({ error: { message: "Run not found." } }, { status: 404 });
     return Response.json({ run });
   }
-  return Response.json({ runs: listRuns(20) });
+  return Response.json({ runs: listRuns(20, tenant) });
 }
 
 const opSchema = z.discriminatedUnion("op", [
@@ -50,6 +52,7 @@ export async function POST(req: Request) {
     );
   }
   const body = parsed.data;
+  const tenant = principalForSession(gate).tenant;
 
   if (body.op === "validate") {
     const unified = await unifiedToolset("orchestrator");
@@ -58,6 +61,9 @@ export async function POST(req: Request) {
   }
 
   if (body.op === "resume") {
+    if (!getRun(body.id, tenant)) {
+      return Response.json({ error: { message: "Not a resumable orchestration run." } }, { status: 404 });
+    }
     const ok = await resumeOrchestrationRun(body.id);
     if (!ok) {
       return Response.json({ error: { message: "Not a resumable orchestration run." } }, { status: 404 });
@@ -87,7 +93,7 @@ export async function POST(req: Request) {
     return Response.json({ plan, validation, result });
   }
 
-  const { runId, kind } = await enqueueOrchestration(plan, unified.tools, { goal: body.goal });
+  const { runId, kind } = await enqueueOrchestration(plan, unified.tools, { goal: body.goal, org: tenant });
   audit(req, gate, "orchestration.enqueue", runId, { kind, steps: plan.steps.length });
   return Response.json({ runId, kind, plan, validation });
 }

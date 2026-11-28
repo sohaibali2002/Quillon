@@ -2,6 +2,10 @@
 // No network, no database: every module loaded here is side-effect free, so the
 // suite is fast enough to run on every commit (wired into CI as check:security).
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const sanitize = await import("../src/lib/sanitize.ts");
 const net = await import("../src/lib/net-guard.ts");
@@ -374,6 +378,221 @@ await check("signed audit checkpoints detect a rewritten audit log", async () =>
   const removed = checkpoints.verifyCheckpoints("default");
   assert.equal(removed.ok, false);
   assert.match(removed.broken.reason, /rewritten or removed/);
+});
+
+// ---------- cross-tenant isolation: memory ----------
+const memory = await import("../src/lib/memory.ts");
+
+await check("memory recall is scoped to the caller's tenant and owner", () => {
+  const alice = { tenant: "acme.test", owner: "sub-alice" };
+  const bob = { tenant: "acme.test", owner: "sub-bob" };
+  const thread = memory.resolveConversation(alice, "thread-alice-0001");
+  memory.addMemory(alice, "alice's compensation band is confidential", thread, "agent");
+
+  assert.ok(memory.listMemories(alice).length >= 1, "alice reads her own memory");
+  assert.equal(memory.listMemories(bob).length, 0, "a colleague must not see alice's memories");
+  assert.equal(memory.listMemories({ tenant: "globex.test", owner: "sub-alice" }).length, 0);
+
+  // Presenting another identity's conversation id yields a fresh thread, not
+  // that conversation's memories.
+  const borrowed = memory.resolveConversation(bob, thread);
+  assert.notEqual(borrowed, thread);
+  assert.equal(memory.memoryContext(bob, borrowed).includes("compensation"), false);
+
+  // Deletion is scoped too: a foreign id deletes nothing.
+  const record = memory.listMemories(alice)[0];
+  assert.equal(memory.deleteMemory(bob, record.id), false);
+  assert.ok(memory.listMemories(alice).length >= 1);
+
+  // The legacy "default" thread is per identity, never one shared thread.
+  assert.notEqual(memory.defaultConversationId(alice), memory.defaultConversationId(bob));
+});
+
+// ---------- cross-tenant isolation: transactions ----------
+const tx = await import("../src/lib/transaction.ts");
+let executes = 0;
+tx.registerActionType("test.write", {
+  simulate: async (p) => ({ would: p }),
+  execute: async (p) => {
+    executes++;
+    return { ok: true, ...p };
+  },
+  undo: async () => {},
+});
+tx.registerActionType("test.delete_record", { execute: async () => ({ deleted: true }) });
+
+await check("a transaction id from another tenant is indistinguishable from missing", () => {
+  const acme = { tenant: "acme.test", actor: "maker@acme.test" };
+  const plan = tx.planTransaction(acme, "Write a note", "isolation", [
+    { kind: "test.write", target: "note:1", payload: { text: "hi" } },
+  ]);
+  const globex = { tenant: "globex.test", actor: "boss@globex.test" };
+  assert.equal(tx.getTransaction(globex, plan.id), null);
+  assert.equal(tx.listTransactions(globex).length, 0);
+  assert.deepEqual(tx.getReplay(globex, plan.id), []);
+  assert.throws(() => tx.approve(globex, plan.id, true), /Unknown transaction/);
+});
+
+await check("the maker cannot approve their own plan", async () => {
+  const acme = { tenant: "acme.test", actor: "maker@acme.test" };
+  const plan = tx.planTransaction(acme, "Self approve", "sod", [
+    { kind: "test.write", target: "note:2", payload: {} },
+  ]);
+  await tx.simulate(acme, plan.id);
+  assert.throws(() => tx.approve(acme, plan.id, true), /Separation of duties/);
+});
+
+await check("approval is bound to the exact plan and a tampered plan cannot execute", async () => {
+  const acme = { tenant: "acme.test", actor: "maker@acme.test" };
+  const plan = tx.planTransaction(acme, "Write a note", "binding", [
+    { kind: "test.write", target: "note:3", payload: { text: "original" } },
+  ]);
+  await tx.simulate(acme, plan.id);
+  const approved = tx.approve({ tenant: "acme.test", actor: "checker@acme.test" }, plan.id, true);
+  assert.equal(approved.status, "executing");
+  assert.equal(approved.approved_hash, approved.plan_hash);
+
+  const before = executes;
+  dbModule.getDb().prepare("UPDATE transaction_actions SET payload = ? WHERE transaction_id = ?").run(
+    JSON.stringify({ text: "tampered" }),
+    plan.id,
+  );
+  await assert.rejects(() => tx.execute(acme, plan.id), /modified/);
+  assert.equal(executes, before, "nothing may run after plan tampering");
+
+  dbModule.getDb().prepare("UPDATE transaction_actions SET payload = ? WHERE transaction_id = ?").run(
+    JSON.stringify({ text: "original" }),
+    plan.id,
+  );
+  const done = await tx.execute(acme, plan.id);
+  assert.equal(done.status, "done");
+  assert.equal(executes, before + 1);
+});
+
+await check("two workers cannot execute the same transaction", async () => {
+  const acme = { tenant: "acme.test", actor: "maker@acme.test" };
+  const plan = tx.planTransaction(acme, "Lease", "single execution", [
+    { kind: "test.write", target: "note:4", payload: {} },
+  ]);
+  await tx.simulate(acme, plan.id);
+  tx.approve({ tenant: "acme.test", actor: "checker@acme.test" }, plan.id, true);
+  // Simulate another worker holding a live lease.
+  dbModule.getDb().prepare("UPDATE transactions SET execution_lease = ? WHERE id = ?").run(
+    new Date(Date.now() + 60_000).toISOString(),
+    plan.id,
+  );
+  await assert.rejects(() => tx.execute(acme, plan.id), /already being executed/);
+  dbModule.getDb().prepare("UPDATE transactions SET execution_lease = NULL WHERE id = ?").run(plan.id);
+  assert.equal((await tx.execute(acme, plan.id)).status, "done");
+});
+
+await check("destructive actions need two distinct approvers", async () => {
+  const acme = { tenant: "acme.test", actor: "maker@acme.test" };
+  const plan = tx.planTransaction(acme, "Delete a record", "dual control", [
+    { kind: "test.delete_record", target: "rec:9", payload: {} },
+  ]);
+  await tx.simulate(acme, plan.id);
+  assert.equal(tx.getTransaction(acme, plan.id).requires_second_approval, true);
+
+  const first = tx.approve({ tenant: "acme.test", actor: "checker@acme.test" }, plan.id, true);
+  assert.equal(first.status, "awaiting_approval", "one approval is not enough to execute");
+  assert.throws(
+    () => tx.approve({ tenant: "acme.test", actor: "checker@acme.test" }, plan.id, true),
+    /second approver/,
+  );
+
+  const second = tx.approve({ tenant: "acme.test", actor: "risk@acme.test" }, plan.id, true);
+  assert.equal(second.status, "executing");
+  assert.equal(second.second_approved_by, "risk@acme.test");
+  assert.equal((await tx.execute(acme, plan.id)).status, "done");
+});
+
+// ---------- tenant scoping of governance data ----------
+const capability = await import("../src/lib/capability.ts");
+const durable = await import("../src/lib/durable.ts");
+const verify = await import("../src/lib/verify.ts");
+
+await check("governance listings are empty without a tenant and filtered by it", () => {
+  assert.deepEqual(capability.listCapabilities(undefined, 100), [], "no org means no grants");
+  assert.deepEqual(durable.listRuns(50), [], "no org means no runs");
+  assert.equal(durable.getRun("any-id"), null);
+  assert.deepEqual(verify.listReports(25), [], "no org means no reports");
+
+  const cap = capability.grantCapability({
+    subject: "acme.test|sub-alice",
+    connector: "netsuite",
+    action: "read",
+    org: "acme.test",
+  });
+  assert.equal(cap.org, "acme.test");
+  assert.equal(capability.listCapabilities(undefined, 100, "acme.test").some((c) => c.id === cap.id), true);
+  assert.equal(capability.listCapabilities(undefined, 100, "globex.test").length, 0);
+
+  // The principal a capability is granted to carries the tenant prefix, so a
+  // grant can never be addressed to another tenant's user.
+  const principal = rbac.principalForSession({ sub: "sub-alice", email: "alice@acme.test" });
+  assert.equal(principal.tenant, "acme.test");
+  assert.equal(principal.owner, "sub-alice");
+});
+
+// ---------- code sandbox: what counts as isolation ----------
+const isolationModule = await import("../src/lib/sandbox-isolation.ts");
+
+await check("production refuses netns and unjailed code execution", () => {
+  const previous = { nodeEnv: process.env.NODE_ENV, unjailed: process.env.QUILLON_SANDBOX_ALLOW_UNJAILED };
+  try {
+    assert.equal(isolationModule.isolationSufficient("netns"), false, "netns leaves the filesystem visible");
+    assert.equal(isolationModule.isolationSufficient("none"), false);
+    assert.equal(isolationModule.isolationSufficient("bwrap"), true);
+    assert.equal(isolationModule.isolationSufficient("chroot"), true);
+    assert.match(isolationModule.isolationRefusal("netns"), /filesystem/);
+    assert.equal(isolationModule.isolationRefusal("bwrap"), null);
+
+    process.env.NODE_ENV = "production";
+    process.env.QUILLON_SANDBOX_ALLOW_UNJAILED = "1";
+    assert.equal(
+      isolationModule.isolationRequired(),
+      true,
+      "the unjailed escape hatch must not override production",
+    );
+  } finally {
+    if (previous.nodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previous.nodeEnv;
+    if (previous.unjailed === undefined) delete process.env.QUILLON_SANDBOX_ALLOW_UNJAILED;
+    else process.env.QUILLON_SANDBOX_ALLOW_UNJAILED = previous.unjailed;
+  }
+});
+
+// ---------- supply chain: the dependency gate is blocking ----------
+await check("the dependency-advisory gate fails on an unaccepted advisory and passes on the current tree", () => {
+  const root = new URL("..", import.meta.url).pathname;
+  const tmp = join(tmpdir(), `quillon-audit-${process.pid}.json`);
+  writeFileSync(
+    tmp,
+    JSON.stringify({
+      vulnerabilities: {
+        evilpkg: { severity: "critical", via: [{ url: "https://github.com/advisories/GHSA-test-only" }] },
+      },
+      metadata: { vulnerabilities: { high: 0, critical: 1, moderate: 0 } },
+    }),
+  );
+  try {
+    const bad = spawnSync(process.execPath, [join(root, "scripts/check-audit.mjs"), "--report", tmp], {
+      encoding: "utf8",
+    });
+    assert.equal(bad.status, 1, "a critical advisory that is not allowlisted must fail the gate");
+    assert.match(bad.stderr, /GHSA-test-only/);
+
+    const good = spawnSync(process.execPath, [join(root, "scripts/check-audit.mjs")], { encoding: "utf8" });
+    assert.equal(good.status, 0, `the real tree must pass the gate: ${good.stdout}${good.stderr}`);
+
+    // And the gate is wired in as a blocking CI step, not advisory.
+    const ci = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
+    assert.match(ci, /run: npm run check:audit/);
+    assert.doesNotMatch(ci, /npm audit[\s\S]{0,120}continue-on-error: true/);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
 });
 
 console.log(`\n${passed} passed${failures.length ? `, ${failures.length} FAILED` : ""}`);

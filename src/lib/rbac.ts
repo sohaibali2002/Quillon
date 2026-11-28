@@ -26,3 +26,17 @@ export function orgForSession(session: { sub: string; email?: string }): string 
   const domain = session.email?.split("@")[1]?.toLowerCase().trim();
   return domain || `user:${session.sub}`;
 }
+
+/**
+ * The (tenant, owner) pair every personal record is scoped to: the tenant from
+ * the session's organisation, the owner from the authenticated subject. An
+ * email is only a fallback when the provider sends no subject; the subject is
+ * the immutable identifier, an email address is not.
+ */
+export function principalForSession(session: {
+  sub: string;
+  email?: string;
+}): { tenant: string; owner: string } {
+  const owner = (session.sub ?? "").trim() || (session.email ?? "").trim() || "anonymous";
+  return { tenant: orgForSession(session), owner };
+}

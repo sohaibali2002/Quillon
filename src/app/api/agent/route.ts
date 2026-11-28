@@ -18,12 +18,12 @@ import {
   type UIMessage,
 } from "ai";
 import { z } from "zod";
-import { createMemoryTools, memoryContext } from "@/lib/memory";
+import { memoryContext, resolveConversation } from "@/lib/memory";
 import { resolveModelAny as resolveModel } from "@/lib/models";
 import { skillsContext } from "@/lib/skills";
 import { unifiedToolset } from "@/lib/tool-registry";
 import { enforceToolAuthority } from "@/lib/tool-authority";
-import { roleOf } from "@/lib/rbac";
+import { principalForSession, roleOf } from "@/lib/rbac";
 import { enforceCapabilities, selectRelevantTools, withRecordPolicy, withToolTimeouts } from "@/lib/tool-policy";
 import { createOrchestrateTool } from "@/lib/orchestrator";
 
@@ -99,9 +99,12 @@ export async function POST(req: Request) {
   const { body } = { body: parsed.data };
   const mode = body.mode ?? "text";
   const prompt = promptFromBody(body);
-  const conversationId = body.conversationId ?? "agent";
+  // The conversation is server-resolved inside the caller's own namespace: a
+  // client-supplied id owned by another identity is replaced, never honoured.
+  const principal = principalForSession(denied);
+  const conversationId = resolveConversation(principal, body.conversationId ?? "agent");
 
-  const unified = await unifiedToolset(conversationId);
+  const unified = await unifiedToolset(conversationId, principal);
   if (unified.mcpErrors.length > 0) {
     console.error("mcp toolset errors:", JSON.stringify(unified.mcpErrors));
   }
@@ -134,7 +137,7 @@ export async function POST(req: Request) {
     model: await resolveModel(body.model),
     instructions: [
       "Answer using the available tools when they help.",
-      memoryContext(conversationId),
+      memoryContext(principal, conversationId),
       await skillsContext(body.skills ?? []),
     ]
       .filter(Boolean)

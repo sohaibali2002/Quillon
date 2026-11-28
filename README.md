@@ -230,6 +230,7 @@ assertions, + contract pin of all 93 operations against the official spec).
 npx tsc --noEmit           # type check
 npm run build              # production build
 npm run check:security     # trust-boundary suite (redaction, SSRF, tool authority, audit checkpoints)
+npm run check:audit        # dependency gate: fails on an unallowlisted high/critical advisory
 node tests/smoke.mjs       # route + UI smoke tests (no key needed)
 ```
 

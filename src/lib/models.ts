@@ -174,6 +174,11 @@ const providers: Record<string, ProviderSpec> = {
         name: "openrouter",
         baseURL: process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
         apiKey: process.env.OPENROUTER_API_KEY ?? "",
+        // Native json_schema output. Without this the provider falls back to
+        // json_object mode, which needs the word "json" in the prompt and does
+        // not constrain the shape, so structured output fails schema parsing.
+        // Set OPENROUTER_STRUCTURED_OUTPUTS=0 for a model that rejects schemas.
+        supportsStructuredOutputs: process.env.OPENROUTER_STRUCTURED_OUTPUTS !== "0",
         // Attribution headers the OpenRouter docs ask every app to send.
         headers: {
           "HTTP-Referer": process.env.APP_URL || "https://github.com/sohaibali2002/Quillon",

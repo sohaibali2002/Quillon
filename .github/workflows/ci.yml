@@ -5,18 +5,35 @@ on:
     branches: [main, master]
   pull_request:
 
+# Least privilege: the workflow only reads the repository. No secrets are
+# exported, no token is persisted in the checkout.
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      # Test-mode acknowledgement for the local smoke harness only; production
+      # deployments must set CONNECTORS_SECRET and the auth secret for real.
+      QUILLON_ALLOW_DEV_SECRET: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Actions are pinned to full commit SHAs, not mutable tags, so a moved tag
+      # cannot change what runs against this repository.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run build
+      # Dependency review: blocking. Fails on any high/critical advisory in the
+      # production tree that is not in scripts/npm-audit-allow.json with a
+      # written reachability argument (the list is empty today).
+      - run: npm run check:audit
       - run: node tests/smoke.mjs
       - run: npm run check:salesforce
       - run: npm run check:hubspot

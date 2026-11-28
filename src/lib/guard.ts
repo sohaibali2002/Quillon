@@ -269,11 +269,13 @@ export function verifyAuditChain(limit = 500): { ok: boolean; checked: number; b
   return { ok: brokenAt === null, checked: rows.length, brokenAt };
 }
 
-export function listAudit(limit = 100) {
+/** Audit rows for one tenant; without an org this returns nothing (fail closed). */
+export function listAudit(limit = 100, org?: string) {
+  if (!org?.trim()) return [];
   return (
     getDb()
-      .prepare("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?")
-      .all(limit) as Record<string, unknown>[]
+      .prepare("SELECT * FROM audit_log WHERE org = ? ORDER BY id DESC LIMIT ?")
+      .all(org.trim(), limit) as Record<string, unknown>[]
   ).map((r) => ({
     id: Number(r.id),
     org: String(r.org ?? "default"),

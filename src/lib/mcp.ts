@@ -247,20 +247,42 @@ export function validateStdioArgs(command: string, args: string[]): void {
 function sealEnv(env: Record<string, string>): string {
   return JSON.stringify(Object.fromEntries(Object.entries(env).map(([k, v]) => [k, encryptToken(connectorsSecret(), v)])));
 }
+
+// Our sealed format is iv.tag.ciphertext with a 12-byte iv (16 base64url chars)
+// and a 16-byte tag (22 chars). That shape is what separates a blob we must be
+// able to decrypt from a legacy plaintext value such as a JWT or an API key.
+function looksSealed(value: string): boolean {
+  const parts = value.split(".");
+  return parts.length === 3 && parts[0].length === 16 && parts[1].length === 22 && parts[2].length > 0;
+}
+
 function openEnv(stored: string): Record<string, string> {
+  let parsed: Record<string, string>;
   try {
-    return Object.fromEntries(
-      Object.entries(JSON.parse(stored) as Record<string, string>).map(([k, v]) => {
-        try {
-          return [k, decryptToken(connectorsSecret(), v)];
-        } catch {
-          return [k, v]; // pre-encryption rows keep working
-        }
-      }),
-    );
+    parsed = JSON.parse(stored) as Record<string, string>;
   } catch {
     return {};
   }
+  const entries = Object.entries(parsed);
+  if (entries.length === 0) return {};
+  const secret = connectorsSecret();
+  return Object.fromEntries(
+    entries.map(([k, v]) => {
+      if (typeof v !== "string") throw new Error(`MCP environment variable ${k} is not a string.`);
+      try {
+        return [k, decryptToken(secret, v)];
+      } catch {
+        // A value in the sealed format that will not decrypt is a key mismatch
+        // or tampering: refuse the server instead of passing the ciphertext (or
+        // whatever else it is) to the process as a credential. Only values that
+        // are not in the sealed format can be legacy plaintext.
+        if (looksSealed(v)) {
+          throw new Error(`MCP environment variable ${k} cannot be decrypted with the current key; re-save this server.`);
+        }
+        return [k, v];
+      }
+    }),
+  );
 }
 
 function withTimeout<T>(p: Promise<T>, what: string): Promise<T> {

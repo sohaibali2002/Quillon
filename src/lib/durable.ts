@@ -50,13 +50,13 @@ export function enqueueRun(
   kind: string,
   input: unknown,
   steps: DurableStepDef[],
-  opts: { priority?: number; maxAttempts?: number } = {},
+  opts: { priority?: number; maxAttempts?: number; org?: string } = {},
 ): string {
   const db = getDb();
   const id = randomUUID();
   db.prepare(
-    "INSERT INTO durable_runs (id, kind, input, status, priority, max_attempts) VALUES (?, ?, ?, 'pending', ?, ?)",
-  ).run(id, kind, JSON.stringify(input), opts.priority ?? 5, opts.maxAttempts ?? 3);
+    "INSERT INTO durable_runs (id, org, kind, input, status, priority, max_attempts) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
+  ).run(id, opts.org?.trim() || "default", kind, JSON.stringify(input), opts.priority ?? 5, opts.maxAttempts ?? 3);
   const ins = db.prepare(
     "INSERT INTO durable_steps (run_id, seq, name) VALUES (?, ?, ?)",
   );
@@ -64,8 +64,9 @@ export function enqueueRun(
   return id;
 }
 
-export function getRun(id: string): DurableRun | null {
-  const row = getDb().prepare("SELECT * FROM durable_runs WHERE id = ?").get(id) as
+export function getRun(id: string, org?: string): DurableRun | null {
+  if (!org?.trim()) return null;
+  const row = getDb().prepare("SELECT * FROM durable_runs WHERE id = ? AND org = ?").get(id, org.trim()) as
     | Record<string, unknown>
     | undefined;
   if (!row) return null;
@@ -83,11 +84,13 @@ export function getRun(id: string): DurableRun | null {
   return run;
 }
 
-export function listRuns(limit = 50): DurableRun[] {
+/** Runs visible to a tenant; without an org this returns nothing (fail closed). */
+export function listRuns(limit = 50, org?: string): DurableRun[] {
+  if (!org?.trim()) return [];
   return (
     getDb()
-      .prepare("SELECT * FROM durable_runs ORDER BY created_at DESC LIMIT ?")
-      .all(limit) as Record<string, unknown>[]
+      .prepare("SELECT * FROM durable_runs WHERE org = ? ORDER BY created_at DESC LIMIT ?")
+      .all(org.trim(), limit) as Record<string, unknown>[]
   ).map(rowToRun);
 }
 
@@ -253,11 +256,13 @@ export function recoverySweep(): { requeued: number; dead: number } {
 }
 
 // Replay a dead run: reset it and its erroring step for another attempt cycle.
-export function replayRun(id: string): boolean {
+// Scoped to the caller's tenant so an id from elsewhere does nothing.
+export function replayRun(id: string, org?: string): boolean {
+  if (!org?.trim()) return false;
   const db = getDb();
   const res = db
-    .prepare("UPDATE durable_runs SET status='pending', attempts=0, error=NULL, lease_until=NULL, worker_id=NULL WHERE id=? AND status IN ('dead','error')")
-    .run(id);
+    .prepare("UPDATE durable_runs SET status='pending', attempts=0, error=NULL, lease_until=NULL, worker_id=NULL WHERE id=? AND org=? AND status IN ('dead','error')")
+    .run(id, org.trim());
   if (res.changes) {
     db.prepare("UPDATE durable_steps SET status='pending', error=NULL WHERE run_id=? AND status='error'").run(id);
   }

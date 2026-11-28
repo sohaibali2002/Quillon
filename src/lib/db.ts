@@ -383,4 +383,33 @@ const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS audit_checkpoints_org ON audit_checkpoints (org, seq);
     `,
   },
+  {
+    id: 17,
+    name: "tenancy-hardening",
+    // Every row that can hold user data gets a tenant and (where it is personal)
+    // an owner. Existing rows default to the sentinel tenant "legacy", which no
+    // authenticated identity can ever resolve to, so pre-migration data is
+    // invisible rather than shared.
+    sql: `
+      ALTER TABLE memories ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'legacy';
+      ALTER TABLE memories ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'legacy';
+      CREATE INDEX IF NOT EXISTS memories_owner ON memories (tenant_id, owner_id, scope);
+      CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE INDEX IF NOT EXISTS conversations_owner ON conversations (tenant_id, owner_id);
+      ALTER TABLE transactions ADD COLUMN plan_hash TEXT;
+      ALTER TABLE transactions ADD COLUMN approved_hash TEXT;
+      ALTER TABLE transactions ADD COLUMN second_approved_by TEXT;
+      ALTER TABLE transactions ADD COLUMN second_approved_hash TEXT;
+      ALTER TABLE transactions ADD COLUMN execution_lease TEXT;
+      CREATE INDEX IF NOT EXISTS transactions_org ON transactions (org, created_at DESC);
+      CREATE INDEX IF NOT EXISTS durable_runs_org ON durable_runs (org, created_at DESC);
+      CREATE INDEX IF NOT EXISTS verification_reports_org ON verification_reports (org, created_at DESC);
+      CREATE INDEX IF NOT EXISTS capabilities_org ON capabilities (org, expires_at);
+    `,
+  },
 ];

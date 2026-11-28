@@ -15,12 +15,12 @@ import { z } from "zod";
 import type { AnswerMetadata } from "@/lib/ai-types";
 import { resolveAttachmentsForModel } from "@/lib/attachments";
 import { compactIfNeeded, compactionContext } from "@/lib/compaction";
-import { memoryContext } from "@/lib/memory";
+import { memoryContext, resolveConversation } from "@/lib/memory";
 import { listProviders, resolveModelAny } from "@/lib/models";
 import { skillsContext } from "@/lib/skills";
 import { unifiedToolset } from "@/lib/tool-registry";
 import { enforceToolAuthority } from "@/lib/tool-authority";
-import { roleOf } from "@/lib/rbac";
+import { principalForSession, roleOf } from "@/lib/rbac";
 import { createOrchestrateTool } from "@/lib/orchestrator";
 import { enforceCapabilities, selectRelevantTools, withRecordPolicy, withToolTimeouts } from "@/lib/tool-policy";
 
@@ -96,7 +96,12 @@ export async function POST(req: Request) {
     );
   }
 
-  const { messages, model, conversationId, skills, maxSteps } = parsed.data;
+  const { messages, model, conversationId: requestedConversation, skills, maxSteps } = parsed.data;
+  // Server-resolved thread inside the caller's namespace (see lib/memory.ts):
+  // compaction state and memories follow the authenticated identity, not a
+  // client-supplied id that could belong to someone else.
+  const principal = principalForSession(denied);
+  const conversationId = resolveConversation(principal, requestedConversation);
 
   // Attachments: validate every file part and give the model real bytes only
   // for this turn's files; older turns become text placeholders.
@@ -120,7 +125,7 @@ export async function POST(req: Request) {
 
   // One registry for every tool surface; a dead MCP server becomes an error
   // entry, never a failed chat turn.
-  const unified = await unifiedToolset(conversationId);
+  const unified = await unifiedToolset(conversationId, principal);
   if (unified.mcpErrors.length > 0) {
     console.error("mcp toolset errors:", JSON.stringify(unified.mcpErrors));
   }
@@ -128,7 +133,7 @@ export async function POST(req: Request) {
   const system = [
     "You are a helpful assistant.",
     compactionContext(compaction),
-    memoryContext(conversationId),
+    memoryContext(principal, conversationId),
     await skillsContext(skills ?? []),
   ]
     .filter(Boolean)

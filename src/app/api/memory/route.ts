@@ -5,9 +5,10 @@ async function secure(req: Request) {
 }
 
 import { z } from "zod";
-import { addMemory, deleteMemory, listMemories } from "@/lib/memory";
+import { addMemory, deleteMemory, listMemories, resolveConversation } from "@/lib/memory";
 
 import { guard } from "@/lib/guard";
+import { principalForSession } from "@/lib/rbac";
 const scopeSchema = z.enum(["conversation", "agent"]);
 
 function badRequest(message: string, issues?: { path: string; message: string }[]) {
@@ -15,15 +16,17 @@ function badRequest(message: string, issues?: { path: string; message: string }[
 }
 
 export async function GET(req: Request) {
-  const denied = await secure(req);
-  if (denied instanceof Response) return denied;
+  const session = await secure(req);
+  if (session instanceof Response) return session;
 
+  const who = principalForSession(session);
   const url = new URL(req.url);
-  const conversationId = url.searchParams.get("conversationId") ?? undefined;
+  const requested = url.searchParams.get("conversationId");
   const scopeParam = url.searchParams.get("scope");
   const scope = scopeParam ? scopeSchema.safeParse(scopeParam) : null;
   if (scope && !scope.success) return badRequest("scope must be conversation or agent.");
-  return Response.json({ memories: listMemories(conversationId, scope?.data) });
+  const conversationId = requested ? resolveConversation(who, requested) : undefined;
+  return Response.json({ memories: listMemories(who, { conversationId, scope: scope?.data }) });
 }
 
 const createSchema = z
@@ -35,8 +38,8 @@ const createSchema = z
   .strict();
 
 export async function POST(req: Request) {
-  const denied = await secure(req);
-  if (denied instanceof Response) return denied;
+  const session = await secure(req);
+  if (session instanceof Response) return session;
 
   let body: unknown;
   try {
@@ -51,17 +54,20 @@ export async function POST(req: Request) {
       parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
     );
   }
+  const who = principalForSession(session);
   const { content, conversationId, scope } = parsed.data;
-  return Response.json({ memory: addMemory(content, conversationId, scope) }, { status: 201 });
+  const target = resolveConversation(who, conversationId);
+  return Response.json({ memory: addMemory(who, content, target, scope), conversationId: target }, { status: 201 });
 }
 
 export async function DELETE(req: Request) {
-  const denied = await secure(req);
-  if (denied instanceof Response) return denied;
+  const session = await secure(req);
+  if (session instanceof Response) return session;
 
   const id = new URL(req.url).searchParams.get("id");
   if (!id) return badRequest("id query parameter is required.");
-  if (!deleteMemory(id)) {
+  const who = principalForSession(session);
+  if (!deleteMemory(who, id)) {
     return Response.json({ error: { message: "Memory not found." } }, { status: 404 });
   }
   return new Response(null, { status: 204 });

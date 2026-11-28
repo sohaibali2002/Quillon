@@ -1,8 +1,9 @@
 // Governance API: audit trail, capability grants, connector health and durable
 // run recovery in one place for admins.
 import { z } from "zod";
-import { guard, audit, listAudit, isAdmin } from "@/lib/guard";
-import { listCapabilities, grantCapability, revokeCapability, purgeExpired } from "@/lib/capability";
+import { guard, audit, auditStrict, listAudit, isAdmin, capabilitySubject } from "@/lib/guard";
+import { getCapability, listCapabilities, grantCapability, revokeCapability, purgeExpired } from "@/lib/capability";
+import { principalForSession } from "@/lib/rbac";
 import { listRuns, replayRun, recoverySweep } from "@/lib/durable";
 import { listReports } from "@/lib/verify";
 import {
@@ -22,14 +23,21 @@ function bad(message: string, issues?: unknown) {
 export async function GET(req: Request) {
   const gate = await guard(req, { role: "viewer" });
   if (gate instanceof Response) return gate;
-  const url = new URL(req.url);
+  const who = principalForSession(gate);
+  const tenant = who.tenant;
+  const admin = isAdmin(gate);
+  // Separate privileges: the audit trail, durable-run inputs and security
+  // reports are admin-only; a non-admin sees only their own capability grants.
+  // Everything is filtered by tenant inside the query, not in the client.
   return Response.json({
-    audit: listAudit(100),
-    capabilities: listCapabilities(undefined, 100),
-    runs: listRuns(50),
-    verifications: listReports(25),
-    recovery: recoverySweep(),
-    admin: isAdmin(gate),
+    audit: admin ? listAudit(100, tenant) : [],
+    capabilities: admin
+      ? listCapabilities(undefined, 100, tenant)
+      : listCapabilities(capabilitySubject(gate), 100, tenant),
+    runs: admin ? listRuns(50, tenant) : [],
+    verifications: admin ? listReports(25, tenant) : [],
+    recovery: admin ? recoverySweep() : { requeued: 0, dead: 0 },
+    admin,
   });
 }
 
@@ -58,32 +66,45 @@ export async function POST(req: Request) {
   const parsed = schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return bad("Invalid governance operation.", parsed.error.issues);
   const body = parsed.data;
+  const tenant = principalForSession(gate).tenant;
   switch (body.op) {
     case "grant": {
-      const cap = grantCapability({ ...body, issuedBy: gate.email });
-      audit(req, gate, "capability.grant", cap.id, { scope: cap.scope, ttl: body.ttlSeconds ?? 300 });
+      // A grant may only target a principal inside the caller's own tenant:
+      // the subject is "tenant|user", so a foreign prefix is a cross-tenant
+      // capability injection and is refused.
+      if (!body.subject.startsWith(`${tenant}|`)) {
+        return bad("A capability can only be granted inside your own tenant.");
+      }
+      auditStrict(req, gate, "capability.grant", body.subject, { scope: `${body.connector}:${body.action}`, ttl: body.ttlSeconds ?? 300 });
+      const cap = grantCapability({ ...body, issuedBy: gate.email, org: tenant });
       return Response.json({ capability: cap });
     }
     case "revoke": {
+      const existing = getCapability(body.id);
+      if (!existing || existing.org !== tenant) {
+        return Response.json({ error: { message: "Capability not found." } }, { status: 404 });
+      }
+      auditStrict(req, gate, "capability.revoke", body.id, { subject: existing.subject });
       const ok = revokeCapability(body.id);
-      audit(req, gate, "capability.revoke", body.id, { ok });
       return Response.json({ ok });
     }
     case "replay": {
-      const ok = replayRun(body.id);
-      audit(req, gate, "run.replay", body.id, { ok });
+      auditStrict(req, gate, "run.replay", body.id, {});
+      const ok = replayRun(body.id, tenant);
+      audit(req, gate, "run.replayed", body.id, { ok });
       return Response.json({ ok });
     }
     case "purge": {
+      auditStrict(req, gate, "capability.purge", "capabilities", {});
       const n = purgeExpired();
-      audit(req, gate, "capability.purge", "capabilities", { removed: n });
+      audit(req, gate, "capability.purged", "capabilities", { removed: n });
       return Response.json({ removed: n });
     }
     case "audit-checkpoint": {
       // Signed outside the database, then shipped to the configured sink so a
       // database rewrite cannot silently rewrite history as well.
       try {
-        const result = createCheckpoint();
+        const result = createCheckpoint(tenant);
         let exported: { exported: boolean; detail: string } = { exported: false, detail: "Nothing new to sign." };
         if (result.checkpoint) {
           audit(req, gate, "audit.checkpoint", String(result.checkpoint.seq), {
@@ -106,9 +127,9 @@ export async function POST(req: Request) {
       }
     }
     case "audit-verify": {
-      const verdict = verifyCheckpoints();
+      const verdict = verifyCheckpoints(tenant);
       audit(req, gate, "audit.verify", "audit_log", verdict);
-      return Response.json({ verdict, checkpoints: listCheckpoints(undefined, 20) });
+      return Response.json({ verdict, checkpoints: listCheckpoints(tenant, 20) });
     }
   }
 }

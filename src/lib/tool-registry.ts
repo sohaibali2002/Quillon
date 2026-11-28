@@ -12,7 +12,7 @@ import { buildHubSpotTools } from "@/lib/hubspot";
 import { buildNetSuiteTools } from "@/lib/netsuite";
 import { buildCostpointTools } from "@/lib/costpoint";
 import { buildOpenRouterTools } from "@/lib/openrouter";
-import { createMemoryTools } from "@/lib/memory";
+import { createMemoryTools, type MemoryIdentity } from "@/lib/memory";
 import { mcpToolset } from "@/lib/mcp";
 
 export type ToolSource =
@@ -69,7 +69,10 @@ function entry(name: string, impl: Tool, source: ToolSource): ToolCatalogEntry {
   return base;
 }
 
-export async function unifiedToolset(conversationId: string): Promise<UnifiedToolset> {
+export async function unifiedToolset(
+  conversationId: string,
+  identity: MemoryIdentity = { tenant: "system", owner: "system" },
+): Promise<UnifiedToolset> {
   const mcp = await mcpToolset();
   const groups: [ToolSource, Record<string, Tool>][] = [
     ["builtin", builtinTools],
@@ -82,7 +85,7 @@ export async function unifiedToolset(conversationId: string): Promise<UnifiedToo
     ["costpoint", buildCostpointTools()],
     // OpenRouter registers only when OPENROUTER_API_KEY is set (36 or_* tools).
     ["openrouter", buildOpenRouterTools()],
-    ["memory", createMemoryTools(conversationId)],
+    ["memory", createMemoryTools(identity, conversationId)],
     ["mcp", mcp.tools],
   ];
   const tools: ToolSet = {};

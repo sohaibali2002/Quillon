@@ -2,6 +2,7 @@
 // next runnable run (used by cron, unattended jobs and tests); GET lists runs.
 import { z } from "zod";
 import { guard, audit } from "@/lib/guard";
+import { principalForSession } from "@/lib/rbac";
 import { listRuns, tick, replayRun, recoverySweep } from "@/lib/durable";
 
 export const maxDuration = 60;
@@ -9,7 +10,8 @@ export const maxDuration = 60;
 export async function GET(req: Request) {
   const gate = await guard(req);
   if (gate instanceof Response) return gate;
-  return Response.json({ runs: listRuns(50), recovery: recoverySweep() });
+  const tenant = principalForSession(gate).tenant;
+  return Response.json({ runs: listRuns(50, tenant), recovery: recoverySweep() });
 }
 
 const schema = z.discriminatedUnion("op", [
@@ -25,7 +27,7 @@ export async function POST(req: Request) {
     return Response.json({ error: { message: "Invalid worker operation." } }, { status: 400 });
   }
   if (parsed.data.op === "replay") {
-    const ok = replayRun(parsed.data.id);
+    const ok = replayRun(parsed.data.id, principalForSession(gate).tenant);
     audit(req, gate, "run.replay", parsed.data.id, { ok });
     return Response.json({ ok });
   }

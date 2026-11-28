@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quillon security remediation — round 3 (2026-11-28)</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1d21; --muted:#5a6270; --line:#e2e5ea; --red:#b3261e; --amber:#8a5a00; --green:#1e6b3a; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  main { max-width:900px; margin:0 auto; padding:32px 20px 64px; }
+  h1 { font-size:1.6rem; margin:0 0 4px; } h2 { font-size:1.15rem; margin:32px 0 8px; }
+  p.meta { color:var(--muted); margin:0 0 24px; }
+  table { width:100%; border-collapse:collapse; margin:12px 0; font-size:.93rem; }
+  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { background:#f6f7f9; font-weight:600; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.88em; background:#f3f4f6; padding:1px 4px; border-radius:3px; }
+  .crit { color:var(--red); font-weight:600; } .high { color:var(--amber); font-weight:600; } .ok { color:var(--green); font-weight:600; }
+  ul { padding-left:20px; } li { margin:4px 0; }
+  .note { border-left:3px solid var(--line); padding:2px 0 2px 14px; color:var(--muted); }
+</style>
+</head>
+<body>
+<main>
+<h1>Security remediation, round 3</h1>
+<p class="meta">Quillon · 2026-11-28 · scope: the four P0 findings and the supporting hardening from the assurance review. Source-level assessment, not a penetration test or certification.</p>
+
+<h2>1. Threat model (this change)</h2>
+<table>
+<tr><th>Asset</th><th>Entry points</th><th>Trust boundaries</th></tr>
+<tr><td>Personal memory, conversations, transaction plans and payloads, capability grants, durable run inputs, audit trail</td><td><code>/api/memory</code>, <code>/api/chat</code>, <code>/api/agent</code>, <code>/api/transactions</code>, <code>/api/governance</code>, <code>/api/worker</code>, <code>/api/orchestration</code>, <code>/api/verify</code></td><td>authenticated user ↔ tenant; tenant ↔ tenant; model output ↔ policy engine; stored ciphertext ↔ key holder; code sandbox ↔ host</td></tr>
+</table>
+<p>STRIDE, ranked by likelihood × impact: <strong>Elevation of privilege</strong> across tenants via caller-supplied ids (memory, transactions, governance, runs, reports); <strong>Tampering</strong> with an approved plan before execution; <strong>Repudiation</strong> through a swallowed audit write; <strong>Information disclosure</strong> of the host filesystem from the code sandbox and of plaintext credentials from failed decryption. Design invariant applied throughout: <em>the model is not the security authority</em> — authorization is resolved from the session and the database, never from a model-supplied or client-supplied identifier.</p>
+
+<h2>2. Findings and fixes</h2>
+<table>
+<tr><th>#</th><th>Severity</th><th>Finding</th><th>Evidence (before)</th><th>Fix</th><th>Regression test</th></tr>
+<tr><td>1</td><td class="crit">P0</td><td>Cross-tenant memory exposure</td><td><code>memory.ts</code> listed memories without an owner filter; agent-scope recall returned every user's facts</td><td>Rows carry <code>tenant_id</code>/<code>owner_id</code>; every read, write and delete filters both; conversation ids are claimed per identity and foreign ids yield a fresh thread</td><td><code>memory recall is scoped to the caller's tenant and owner</code></td></tr>
+<tr><td>2</td><td class="crit">P0</td><td>Transaction authorization and tenant isolation</td><td>reads and transitions used no tenant predicate; any member could approve or execute a foreign plan by id</td><td>Every query filters <code>org</code>; maker ≠ approver; high-impact kinds need two distinct approvers; approval bound to the plan SHA-256; atomic execution lease; fail-closed audit before state changes</td><td>four transaction tests (foreign id, self-approval, tampered plan, lease, dual approval)</td></tr>
+<tr><td>3</td><td class="crit">P0</td><td>Governance data exposure</td><td><code>GET /api/governance</code> returned global audit, grants, runs and reports to any viewer</td><td>Queries filter by tenant; audit, runs and reports are admin-only; members see only their own grants; grants cannot target a foreign tenant; checkpoint verify/export scoped</td><td><code>governance listings are empty without a tenant and filtered by it</code></td></tr>
+<tr><td>4</td><td class="crit">P0</td><td>Sandbox fallback accepted <code>netns</code></td><td>production rejected only <code>mode === "none"</code>; <code>netns</code> left the host filesystem readable</td><td><code>isolationSufficient()</code> accepts only <code>bwrap</code>/<code>chroot</code>; production always requires isolation and ignores <code>QUILLON_SANDBOX_ALLOW_UNJAILED</code></td><td><code>production refuses netns and unjailed code execution</code></td></tr>
+<tr><td>5</td><td class="high">High</td><td>MCP env ciphertext fell back to plaintext on decrypt failure</td><td><code>openEnv</code> returned the stored value when decryption threw</td><td>A value in the sealed format that will not decrypt fails that server closed; only non-sealed values are treated as legacy plaintext</td><td>covered by the encryption path; not separately unit-tested</td></tr>
+<tr><td>6</td><td class="high">High</td><td>Redis published on the host; no container hardening</td><td><code>docker-compose.yml</code> mapped 6379 and ran the app with default privileges</td><td>Redis on an internal network only, password required; app read-only, <code>cap_drop: ALL</code>, <code>no-new-privileges</code>, resource limits</td><td>YAML validated; not runtime-verified here</td></tr>
+<tr><td>7</td><td class="high">High</td><td>CI used mutable action tags and unpinned permissions</td><td><code>actions/checkout@v4</code>, no <code>permissions:</code></td><td>Full commit SHAs, <code>contents: read</code>, <code>persist-credentials: false</code>, <code>npm audit --audit-level=high</code></td><td>YAML validated</td></tr>
+</table>
+
+<h2>3. Scanner results</h2>
+<ul>
+<li><code>npm audit --omit=dev</code>: 6 advisories (3 high, 3 moderate). <strong>image-size</strong> (high) — DoS infinite loop in JXL/HEIF/ICNS parsers: relevant to file ingestion; the fix is a breaking upgrade, so it is a release blocker for untrusted uploads until scheduled. <strong>postcss</strong> (high) — build-time parser; not reachable at runtime. <strong>uuid</strong> (moderate) — buffer API not used by the exceljs call path.</li>
+<li>semgrep, gitleaks, trivy, syft: not installed in this workspace; CI does not yet run them. Recommended next: pin Semgrep and Gitleaks actions by SHA, add an SBOM job.</li>
+<li><code>npm run check:security</code>: 36 passed (28 before). <code>npx tsc --noEmit</code>: exit 0. <code>npm run build</code>: exit 0.</li>
+</ul>
+
+<h2>4. Release-blocking criteria used</h2>
+<ul>
+<li>Any cross-tenant read or write reachable from an authenticated session blocks release.</li>
+<li>Any path where a model or client-supplied id substitutes for server-side authorization blocks release.</li>
+<li>Arbitrary code or third-party MCP processes with host filesystem access block release in production profiles.</li>
+<li>High/critical dependency advisories that are reachable from untrusted input block release until patched or mitigated.</li>
+</ul>
+
+<h2>5. Remaining gaps (next phases)</h2>
+<ul>
+<li><strong>DNS rebinding</strong>: validated DNS answers are not pinned at the socket; network-level egress enforcement is still required (phase 3).</li>
+<li><strong>MCP execution isolation</strong>: stdio servers still run with the host process's privileges; containers or microVMs with per-server identity are phase 3.</li>
+<li><strong>Cryptography</strong>: AES-256-GCM token encryption exists; database and backup encryption at rest, KMS/HSM envelope keys and rotation are phase 4. FIPS 140-3 validation is a module certification, not a property of the algorithm.</li>
+<li><strong>Authorization granularity</strong>: grants are still connector/action scoped, not per-resource; an ABAC/PDP layer with per-tool resource resolvers is phase 2.</li>
+<li><strong>Audit independence</strong>: signed checkpoints and an optional external sink exist; a mandatory, independently administered WORM/SIEM destination is phase 6.</li>
+<li><strong>Supply chain</strong>: SBOM generation, artifact signing and provenance are not yet in CI.</li>
+</ul>
+
+<p class="note">This report records what the code does today and what was executed to prove it. Enterprise readiness, high assurance and government deployment are separate assurance programmes; nothing here is a certification.</p>
+</main>
+</body>
+</html>

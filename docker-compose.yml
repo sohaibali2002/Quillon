@@ -1,3 +1,11 @@
+# Production-shaped local stack.
+#
+# Hardening: the app runs read-only with every Linux capability dropped and no
+# privilege escalation; Redis is never published to the host and requires a
+# password; the two services share a private network only.
+#
+# Set REDIS_PASSWORD and the model keys in the environment (or a .env file next
+# to this compose file). Do not commit them.
 services:
   app:
     build: .
@@ -5,6 +13,7 @@ services:
       - "3000:3000"
     environment:
       - DATABASE_PATH=/data/quillon.db
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
       # Model: set one of these (AI_GATEWAY_API_KEY or a native provider key).
       - AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -12,12 +21,43 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       # Local LLM: point at a host-running Ollama.
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+      # Production profile: refuse unjailed code execution and require grants.
+      - NODE_ENV=production
+      - QUILLON_SANDBOX_REQUIRE_ISOLATION=1
+      - QUILLON_REQUIRE_GRANTS=1
+    read_only: true
+    tmpfs:
+      - /tmp
     volumes:
       - app-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 2g
+    cpus: 2
+    depends_on:
+      - redis
+
   redis:
     image: redis:8-alpine
-    ports:
-      - "6379:6379"
+    # No `ports:` mapping: Redis is reachable only from the app on the private
+    # network below, never from the host or the internet.
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}", "--appendonly", "yes"]
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    volumes:
+      - redis-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+
+networks:
+  default:
+    name: quillon-internal
 
 volumes:
   app-data:
+  redis-data:

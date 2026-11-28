@@ -215,10 +215,26 @@ export async function sandboxIsolation(
 
 // A subprocess timeout is a resource limit, not a security boundary: unless the
 // code runs inside an OS jail it can read what the platform can read and reach
-// the network it can reach. Production therefore requires isolation, and a
-// deployment that wants unjailed execution has to say so explicitly.
+// the network it can reach. Production therefore always requires isolation, and
+// the unjailed escape hatch is honoured outside production only.
 export function isolationRequired(): boolean {
   if (process.env.QUILLON_SANDBOX_REQUIRE_ISOLATION === "1") return true;
-  if (process.env.QUILLON_SANDBOX_ALLOW_UNJAILED === "1") return false;
-  return process.env.NODE_ENV === "production";
+  if (process.env.NODE_ENV === "production") return true;
+  return process.env.QUILLON_SANDBOX_ALLOW_UNJAILED !== "1";
+}
+
+// Only modes that hide the host filesystem count. "netns" gives the code a
+// private network namespace but the host's filesystem stays visible, so it is a
+// network control, not a code jail, and must never satisfy the requirement.
+export function isolationSufficient(mode: IsolationMode): boolean {
+  return mode === "bwrap" || mode === "chroot";
+}
+
+/** Human-readable reason a mode is refused, or null when it is acceptable. */
+export function isolationRefusal(mode: IsolationMode): string | null {
+  if (isolationSufficient(mode)) return null;
+  if (mode === "netns") {
+    return "a network namespace alone leaves the host filesystem readable; install bubblewrap for a real jail";
+  }
+  return "no filesystem-isolating jail is available; install bubblewrap or enable unprivileged user namespaces";
 }

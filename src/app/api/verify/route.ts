@@ -2,6 +2,7 @@
 // summaries (parsed client- or sandbox-side) and list past reports.
 import { z } from "zod";
 import { guard, audit } from "@/lib/guard";
+import { principalForSession } from "@/lib/rbac";
 import {
   verifySpreadsheet, verifyFormulaConsistency, verifyDeck, verifyDocument, saveReport, listReports,
 } from "@/lib/verify";
@@ -45,7 +46,7 @@ const schema = z.discriminatedUnion("target", [
 export async function GET(req: Request) {
   const gate = await guard(req);
   if (gate instanceof Response) return gate;
-  return Response.json({ reports: listReports(25) });
+  return Response.json({ reports: listReports(25, principalForSession(gate).tenant) });
 }
 
 export async function POST(req: Request) {
@@ -67,7 +68,7 @@ export async function POST(req: Request) {
   } else {
     checks = verifyDocument(body);
   }
-  const report = saveReport(body.target, body.name, checks);
+  const report = saveReport(body.target, body.name, checks, principalForSession(gate).tenant);
   audit(req, gate, "verify.report", report.id, { target: body.target, name: body.name, verdict: report.verdict });
   return Response.json({ report });
 }

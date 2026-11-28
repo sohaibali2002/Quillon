@@ -39,11 +39,13 @@ export function saveReport(targetKind: VerificationReport["targetKind"], targetN
   return { id, targetKind, targetName, verdict, checks, created_at: new Date().toISOString() };
 }
 
-export function listReports(limit = 50) {
+/** Reports visible to a tenant; without an org this returns nothing (fail closed). */
+export function listReports(limit = 50, org?: string) {
+  if (!org?.trim()) return [];
   return (
     getDb()
-      .prepare("SELECT * FROM verification_reports ORDER BY created_at DESC LIMIT ?")
-      .all(limit) as Record<string, unknown>[]
+      .prepare("SELECT * FROM verification_reports WHERE org = ? ORDER BY created_at DESC LIMIT ?")
+      .all(org.trim(), limit) as Record<string, unknown>[]
   ).map((r) => ({
     id: String(r.id),
     targetKind: String(r.target_kind),

@@ -1,0 +1,4 @@
+{
+  "_comment": "Advisories we have reviewed and accept in the production tree. Every entry needs a reason that explains why the vulnerable code is not reachable from Quillon's own paths. scripts/check-audit.mjs fails the build on any high/critical advisory not listed here.",
+  "allow": []
+}

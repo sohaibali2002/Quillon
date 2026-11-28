@@ -572,16 +572,18 @@ async function main() {
       undo: async () => {},
     });
 
-    const tx = planTransaction("Smoke tx", "verify engine works", [
+    const txScope = { tenant: "smoke", actor: "smoke-runner" };
+    const txApprover = { tenant: "smoke", actor: "smoke-approver" };
+    const tx = planTransaction(txScope, "Smoke tx", "verify engine works", [
       { kind: "smoke.append", target: "log", payload: { v: "a" } },
       { kind: "smoke.explode", target: "boom", payload: {} },
-    ], "smoke");
-    const simTx = await simulate(tx.id);
+    ]);
+    const simTx = await simulate(txScope, tx.id);
     record("transaction simulate → awaiting_approval", simTx.status === "awaiting_approval", `status=${simTx.status}`);
-    approve(tx.id, true);
-    const done = await execute(tx.id);
+    approve(txApprover, tx.id, true);
+    const done = await execute(txApprover, tx.id);
     record("failed execute compensates in reverse", done.status === "failed" && !(globalThis.__smokeLog ?? []).includes("exec:a"), `status=${done.status} log=${JSON.stringify(globalThis.__smokeLog)}`);
-    record("replay log records events", getReplay(tx.id).length >= 4, `events=${getReplay(tx.id).length}`);
+    record("replay log records events", getReplay(txScope, tx.id).length >= 4, `events=${getReplay(txScope, tx.id).length}`);
 
     const cap = grantCapability({ subject: "smoke-agent", connector: "smoke", action: "read", ttlSeconds: 60, maxUses: 2 });
     const ok1 = checkCapability("smoke-agent", "smoke", "read", "acme");
@@ -634,20 +636,22 @@ async function main() {
     record("capability max-uses atomic under concurrency", wins === 5, `wins=${wins} (expected exactly 5 of 12)`);
 
     // 3. Separation of duties: the maker cannot approve their own transaction.
-    const sodTx = planTransaction("SoD tx", "maker cannot approve", [
+    const sodMaker = { tenant: "smoke", actor: "maker@example.com" };
+    const sodChecker = { tenant: "smoke", actor: "checker@example.com" };
+    const sodTx = planTransaction(sodMaker, "SoD tx", "maker cannot approve", [
       { kind: "smoke.append", target: "log", payload: { v: "sod" } },
-    ], "maker@example.com");
-    await simulate(sodTx.id);
+    ]);
+    await simulate(sodMaker, sodTx.id);
     let sodRejected = false;
     try {
-      approve(sodTx.id, true, "maker@example.com");
+      approve(sodMaker, sodTx.id, true);
     } catch (e) {
       sodRejected = /Separation of duties/.test(e instanceof Error ? e.message : String(e));
     }
     record("transaction: maker cannot approve own transaction", sodRejected);
-    const sodOk = approve(sodTx.id, true, "checker@example.com");
+    const sodOk = approve(sodChecker, sodTx.id, true);
     record("transaction: a different approver can approve", sodOk.status === "executing", `status=${sodOk.status}`);
-    await execute(sodTx.id);
+    await execute(sodChecker, sodTx.id);
 
     // 4. Tenant scoping helper: same domain shares an org, different domains don't.
     record(
@@ -669,7 +673,7 @@ async function main() {
     registerRunKind("smoke.slow", slowSteps);
     const slowId = enqueueRun("smoke.slow", {}, slowSteps);
     const running = tick("w-slow", { heartbeatMs: 100 });
-    for (let i = 0; i < 40 && getRun(slowId).status !== "running"; i++) {
+    for (let i = 0; i < 40 && getRun(slowId, "default")?.status !== "running"; i++) {
       await new Promise((r) => setTimeout(r, 25));
     }
     const { DatabaseSync } = await import("node:sqlite");
@@ -682,8 +686,10 @@ async function main() {
     sdb.close();
     record("durable: heartbeat renews the lease while a step runs", lease2 > lease1, `lease1=${lease1} lease2=${lease2}`);
     await running;
-    const slowRun = getRun(slowId);
-    record("durable: step longer than base lease completes", slowRun.status === "done", `status=${slowRun.status} error=${slowRun.error}`);
+    const slowRun = getRun(slowId, "default");
+    record("durable: step longer than base lease completes", slowRun?.status === "done", `status=${slowRun?.status} error=${slowRun?.error}`);
+    record("durable: a run is invisible from another org", getRun(slowId, "someone-else") === null);
+    record("durable: a run needs an explicit org to be read", getRun(slowId) === null);
 
     // ---- Contract check: implemented routes match openapi.yaml ----
     const yamlText = (await import("node:fs")).readFileSync("openapi.yaml", "utf8");

@@ -8,6 +8,7 @@ import { getDb } from "@/lib/db";
 
 export interface Capability {
   id: string;
+  org: string;
   subject: string;
   connector: string;
   action: string;
@@ -26,6 +27,7 @@ export function grantCapability(opts: {
   ttlSeconds?: number;
   maxUses?: number | null;
   issuedBy?: string;
+  org?: string;
 }): Capability {
   const db = getDb();
   const ttl = opts.ttlSeconds ?? 300;
@@ -33,8 +35,8 @@ export function grantCapability(opts: {
   const id = randomUUID();
   const scope = `${opts.connector}:${opts.action}${opts.resource ? `#${opts.resource}` : ""}`;
   db.prepare(
-    "INSERT INTO capabilities (id, subject, connector, action, resource, scope, issued_by, expires_at, max_uses) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run(id, opts.subject, opts.connector, opts.action, opts.resource ?? null, scope, opts.issuedBy ?? null, expires, opts.maxUses ?? null);
+    "INSERT INTO capabilities (id, org, subject, connector, action, resource, scope, issued_by, expires_at, max_uses) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(id, opts.org?.trim() || "default", opts.subject, opts.connector, opts.action, opts.resource ?? null, scope, opts.issuedBy ?? null, expires, opts.maxUses ?? null);
   return getCapability(id)!;
 }
 
@@ -45,16 +47,22 @@ export function getCapability(id: string): Capability | null {
   return row ? rowToCap(row) : null;
 }
 
-export function listCapabilities(subject?: string, limit = 100): Capability[] {
+/**
+ * Grants visible to a tenant. Without an org this returns nothing (fail closed);
+ * pass a subject as well to see only that principal's grants.
+ */
+export function listCapabilities(subject?: string, limit = 100, org?: string): Capability[] {
+  if (!org?.trim()) return [];
   const rows = subject
-    ? getDb().prepare("SELECT * FROM capabilities WHERE subject = ? ORDER BY issued_at DESC LIMIT ?").all(subject, limit)
-    : (getDb().prepare("SELECT * FROM capabilities ORDER BY issued_at DESC LIMIT ?").all(limit) as Record<string, unknown>[]);
+    ? getDb().prepare("SELECT * FROM capabilities WHERE org = ? AND subject = ? ORDER BY issued_at DESC LIMIT ?").all(org.trim(), subject, limit)
+    : (getDb().prepare("SELECT * FROM capabilities WHERE org = ? ORDER BY issued_at DESC LIMIT ?").all(org.trim(), limit) as Record<string, unknown>[]);
   return rows.map(rowToCap);
 }
 
 function rowToCap(r: Record<string, unknown>): Capability {
   return {
     id: String(r.id),
+    org: String(r.org ?? "default"),
     subject: String(r.subject),
     connector: String(r.connector),
     action: String(r.action),

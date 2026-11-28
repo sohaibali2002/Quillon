@@ -1,5 +1,66 @@
 # Changelog
 
+## 2026-11-28 (supply chain, live-provider structured output, smoke truth)
+
+- Dependency gate is blocking. `npm run check:audit` fails CI on any high or
+  critical advisory in the production tree that is not in
+  `scripts/npm-audit-allow.json` with a written reason (the list is empty), and
+  the step in `.github/workflows/ci.yml` no longer has `continue-on-error`.
+  Both high findings are fixed at source rather than allowlisted: `postcss`
+  is pinned to `^8.5.23` and `image-size` to `^2.2.0` through npm `overrides`.
+  `scripts/check-security.mjs` pins the gate's failure path (a synthetic
+  critical advisory must exit 1) and that CI runs it blocking.
+- OpenRouter structured output works. The provider was running in
+  `json_object` mode, so `Output.object` failed two ways: upstream rejects the
+  request unless the prompt contains the word "json", and unconstrained JSON
+  fails schema parsing. `createOpenAICompatible` now sets
+  `supportsStructuredOutputs` (turn off with `OPENROUTER_STRUCTURED_OUTPUTS=0`
+  for a model that rejects `json_schema`). Verified live: `/api/structured`,
+  `/api/agent` structured, and the workflow planner all pass over OpenRouter.
+- `tests/smoke.mjs` caught up with the tenant-scoped governance APIs
+  (`planTransaction`/`simulate`/`approve`/`execute` take a `{tenant, actor}`
+  scope; `getRun` needs an org) and now also asserts that a run is invisible
+  from another org and unreadable without one. Suite: 60/60 in the default
+  configuration, 59/60 over OpenRouter with a non-default
+  `AI_DEFAULT_MODEL` (the remaining check pins the stock default model id).
+
+## 2026-11-28 (tenant isolation, dual approval, sandbox gate)
+
+Closes the four P0 findings from the assurance review and the supporting
+hardening around them. Every fix carries a regression test in
+`scripts/check-security.mjs` (28 → 36 checks).
+
+- Memory is scoped to the authenticated `(tenant, owner)` pair
+  (`src/lib/memory.ts`, migration 17). Recall and context no longer read other
+  users' rows; agent-scope facts are per owner. Conversation ids are claimed by
+  the identity that first uses them, and a request presenting someone else's id
+  gets a fresh thread instead of that conversation — ids are not capabilities.
+  `src/app/api/chat/route.ts` and `src/app/api/agent/route.ts` resolve the
+  conversation server-side; the legacy "default" thread is per identity.
+- Transactions (`src/lib/transaction.ts`) filter by tenant on every read and
+  transition, so a foreign id is indistinguishable from a missing one. Approval
+  is bound to a SHA-256 of the exact plan; the maker cannot approve; destructive
+  kinds need two distinct approvers, neither the maker; execution takes an
+  atomic lease so two workers cannot run one plan (a mid-run plan edit aborts).
+  The route writes a fail-closed audit record before approve/execute/compensate.
+- Governance (`src/app/api/governance/route.ts`) scopes audit, capabilities,
+  durable runs and verification reports to the tenant inside the query; audit,
+  run histories and reports are admin-only, a non-admin sees only their own
+  grants, and a capability can only be granted to a principal in the caller's
+  tenant. `listAudit`, `listRuns`, `getRun`, `listReports` and
+  `listCapabilities` return nothing without a tenant.
+- Sandbox (`src/lib/sandbox-isolation.ts`, `src/lib/sandbox.ts`): production
+  requires a filesystem-isolating jail. `netns` (network namespace, host
+  filesystem visible) and `none` are refused; `QUILLON_SANDBOX_ALLOW_UNJAILED`
+  no longer overrides production.
+- MCP (`src/lib/mcp.ts`): a stored env value in the sealed format that will not
+  decrypt now fails that server closed instead of being passed to the process.
+- `docker-compose.yml`: Redis is no longer published to the host, requires a
+  password, and the app runs read-only with all capabilities dropped and
+  `no-new-privileges`.
+- `.github/workflows/ci.yml`: actions pinned to full commit SHAs, least-privilege
+  `permissions`, no persisted credentials, plus `npm audit --audit-level=high`.
+
 ## 2026-11-28 (accessibility pass on the landing page)
 
 Browser checks at 390px and 1280px now report zero low-contrast text, zero

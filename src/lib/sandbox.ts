@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, writeFile, rm, readdir, stat, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isolationRequired, sandboxIsolation } from "@/lib/sandbox-isolation";
+import { isolationRefusal, isolationRequired, sandboxIsolation } from "@/lib/sandbox-isolation";
 
 export const MAX_TIMEOUT_MS = 15_000;
 export const MAX_CODE_CHARS = 100_000;
@@ -138,13 +138,14 @@ export async function runCode(input: SandboxInput): Promise<SandboxResult> {
   const nodeModules = join(process.cwd(), "node_modules");
   const isolation = await sandboxIsolation(dir, { nodeModules });
 
-  if (isolationRequired() && isolation.mode === "none") {
+  const refusal = isolationRequired() ? isolationRefusal(isolation.mode) : null;
+  if (refusal) {
     return {
       language,
       stdout: "",
       stderr: "",
       exitCode: null,
-      error: `Code execution is disabled: QUILLON_SANDBOX_REQUIRE_ISOLATION=1 but this host offers no isolation (${isolation.detail}). Install bubblewrap or enable unprivileged user namespaces.`,
+      error: `Code execution is disabled: ${refusal} (current mode: ${isolation.mode}; ${isolation.detail}).`,
       durationMs: Date.now() - started,
       filesWritten,
       command: [],

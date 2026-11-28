@@ -275,12 +275,13 @@ export function orchestrationStepDefs(plan: PipelinePlan, tools: ToolSet): Durab
 export async function enqueueOrchestration(
   plan: PipelinePlan,
   tools: ToolSet,
-  opts: { goal?: string } = {},
+  opts: { goal?: string; org?: string } = {},
 ): Promise<{ runId: string; kind: string }> {
   const kind = orchestrationKindFor(plan);
   registerRunKind(kind, orchestrationStepDefs(plan, tools));
   const runId = enqueueRun(kind, { goal: opts.goal ?? plan.summary, plan }, orchestrationStepDefs(plan, tools), {
     maxAttempts: 2,
+    org: opts.org,
   });
   return { runId, kind };
 }
