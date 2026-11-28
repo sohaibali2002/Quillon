@@ -8,6 +8,8 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readCredential, readToken } from "@/lib/connectors";
+import { guardedFetch } from "@/lib/net-guard";
+import { runWithTenant, tenantScope } from "@/lib/tenant-context";
 import { safeErrorMessage } from "@/lib/sanitize";
 import { toolFetchSignal } from "@/lib/tool-signal";
 
@@ -94,6 +96,8 @@ export function buildPlatformTools(recipe: PlatformRecipe): Record<string, Tool>
       description: `${recipe.name}: ${action.description}`,
       inputSchema: z.object(schema).describe(action.description),
       execute: async (input) => {
+        // Reads resolve through the ambient tenant context; the execute
+        // callback itself pins the tenant so a late callback can't drift.
         const stored = readCredential(recipe.id);
         if (!stored && !readToken(recipe.id)) {
           return { ok: false, error: `${recipe.name} is not connected. Connect it in the Connectors panel.` };
@@ -141,7 +145,11 @@ export function buildPlatformTools(recipe: PlatformRecipe): Record<string, Tool>
           }
         }
         try {
-          const res = await fetch(url, {
+          // Every outbound connector call goes through the central egress
+          // guard: destination, DNS answers and redirects are validated like
+          // any other platform fetch. A connector base URL from configuration
+          // must not become an SSRF channel.
+          const res = await guardedFetch(url, {
             method: action.method,
             headers: {
               ...recipe.auth(cred),
@@ -190,14 +198,22 @@ export function buildPlatformTools(recipe: PlatformRecipe): Record<string, Tool>
   return tools;
 }
 
-/** Tools for every platform that has a stored credential, flattened by tool name. */
-export function buildConnectedTools(recipes: PlatformRecipe[]): Record<string, Tool> {
+/** Tools for every platform that has a stored credential for the tenant, flattened by tool name. */
+export function buildConnectedTools(recipes: PlatformRecipe[], tenant?: string): Record<string, Tool> {
+  const scope = tenantScope(tenant);
   const out: Record<string, Tool> = {};
   // Only connected platforms get their schemas sent to the model: 200+ action
   // schemas would dominate the prompt when at most a few platforms are wired.
   for (const recipe of recipes) {
-    if (!readToken(recipe.id)) continue;
-    Object.assign(out, buildPlatformTools(recipe));
+    if (!readToken(recipe.id, scope)) continue;
+    for (const [name, t] of Object.entries(buildPlatformTools(recipe))) {
+      const exec = (t as { execute?: unknown }).execute;
+      if (typeof exec === "function") {
+        (t as { execute: unknown }).execute = async (input: unknown) =>
+          runWithTenant(scope, () => (exec as (i: unknown) => Promise<unknown>)(input));
+      }
+      out[name] = t;
+    }
   }
   return out;
 }

@@ -1,7 +1,7 @@
 // Attachment storage: upload once, reference by id from message parts.
 // Clients never get to hand the model arbitrary bytes for older turns; the chat
 // route resolves the latest turn's files from here (see lib/attachments.ts).
-import { guard } from "@/lib/guard";
+import { guard, orgForSession } from "@/lib/guard";
 import {
   MAX_FILE_BYTES,
   isAllowedMediaType,
@@ -13,6 +13,8 @@ import { isActiveMediaType } from "@/lib/sanitize";
 export async function POST(req: Request) {
   const gate = await guard(req);
   if (gate instanceof Response) return gate;
+  const tenant = orgForSession(gate);
+  const owner = gate.sub;
 
   const contentType = req.headers.get("content-type") ?? "";
   let filename = "";
@@ -21,6 +23,13 @@ export async function POST(req: Request) {
 
   try {
     if (contentType.includes("multipart/form-data")) {
+      const contentLength = Number(req.headers.get("content-length") ?? "0");
+      if (contentLength > MAX_FILE_BYTES * 1.4) {
+        return Response.json(
+          { error: { message: `Files are limited to ${MAX_FILE_BYTES / (1024 * 1024)} MB.` } },
+          { status: 413 },
+        );
+      }
       const form = await req.formData();
       const file = form.get("file");
       if (!(file instanceof File)) {
@@ -53,7 +62,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const saved = await saveUpload({ filename, mediaType, data: bytes });
+    const saved = await saveUpload({ filename, mediaType, data: bytes, tenant, ownerId: owner });
     return Response.json({ file: saved, url: `/api/files/${saved.id}` });
   } catch (error) {
     return Response.json(
@@ -68,7 +77,9 @@ export async function GET(req: Request) {
   if (gate instanceof Response) return gate;
 
   const id = new URL(req.url).searchParams.get("id") ?? "";
-  const stored = await readUpload(id);
+  // A UUID identifies the file; it does not authorize the read. The stored
+  // tenant and owner must match the caller's session.
+  const stored = await readUpload(id, { tenant: orgForSession(gate), owner: gate.sub });
   if (!stored) return Response.json({ error: { message: "File not found." } }, { status: 404 });
 
   // Any file that would execute on the app's own origin (HTML, SVG, XML, PDF

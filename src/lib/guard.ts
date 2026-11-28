@@ -243,7 +243,16 @@ export function verifyAuditChain(limit = 500): { ok: boolean; checked: number; b
       )
       .all(limit) as Record<string, unknown>[]
   ).reverse();
-  let prevHash: string | null = null;
+  // A partial window does not start the chain: seed prevHash from the row
+  // before the window so verifying the most recent N entries of a long log
+  // does not report a false break at the first row (which legitimately points
+  // at an earlier hash).
+  const seedRow = getDb()
+    .prepare(
+      "SELECT hash FROM audit_log WHERE id < (SELECT MIN(id) FROM (SELECT id FROM audit_log ORDER BY id DESC LIMIT ?)) ORDER BY id DESC LIMIT 1",
+    )
+    .get(limit) as { hash: string | null } | undefined;
+  let prevHash: string | null = seedRow?.hash ?? null;
   let brokenAt: number | null = null;
   for (const r of rows) {
     const expected = createHash("sha256")

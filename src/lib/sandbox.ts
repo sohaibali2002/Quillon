@@ -15,6 +15,7 @@ import { mkdtemp, writeFile, rm, readdir, stat, readFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isolationRefusal, isolationRequired, sandboxIsolation } from "@/lib/sandbox-isolation";
+import { DEFAULT_LIMITS, createCgroup, type CgroupHandle } from "@/lib/cgroup";
 
 export const MAX_TIMEOUT_MS = 15_000;
 export const MAX_CODE_CHARS = 100_000;
@@ -65,6 +66,8 @@ export type SandboxResult = {
   stderrChars: number;
   /** Which OS-level isolation the run actually had. */
   isolation?: string;
+  /** Resource caps the kernel actually enforced, when a cgroup was available. */
+  resourceLimits?: string;
   /** Base64 contents of files the run produced, when captureFiles was set. */
   capturedFiles?: { name: string; base64: string; bytes: number }[];
 };
@@ -202,32 +205,46 @@ export async function runCode(input: SandboxInput): Promise<SandboxResult> {
       ingestedFiles.push(name);
     }
 
+    let group: CgroupHandle | null = null;
+    let limitsNote: string | undefined;
+
     const finish = (
       exitCode: number | null,
       error: string | null,
       rawStdout: string,
       rawStderr: string,
       timedOut: boolean,
-    ): SandboxResult => ({
-      language,
-      stdout: cap(rawStdout),
-      stderr: cap(rawStderr),
-      exitCode,
-      error,
-      durationMs: Date.now() - started,
-      filesWritten,
-      command: argv,
-      timeoutMs,
-      timedOut,
-      truncated: rawStdout.length > MAX_OUTPUT_CHARS || rawStderr.length > MAX_OUTPUT_CHARS,
-      entryFile,
-      ingestedFiles,
-      stdoutChars: rawStdout.length,
-      stderrChars: rawStderr.length,
-      isolation: isolation.mode,
-    });
+    ): SandboxResult => {
+      group?.remove();
+      group = null;
+      return {
+        language,
+        stdout: cap(rawStdout),
+        stderr: cap(rawStderr),
+        exitCode,
+        error,
+        durationMs: Date.now() - started,
+        filesWritten,
+        command: argv,
+        timeoutMs,
+        timedOut,
+        truncated: rawStdout.length > MAX_OUTPUT_CHARS || rawStderr.length > MAX_OUTPUT_CHARS,
+        entryFile,
+        ingestedFiles,
+        stdoutChars: rawStdout.length,
+        stderrChars: rawStderr.length,
+        isolation: isolation.mode,
+        resourceLimits: limitsNote,
+      };
+    };
 
     return await new Promise<SandboxResult>((resolve) => {
+      group = createCgroup();
+      if (group) {
+        limitsNote =
+          `cgroup v2: ${Math.round(DEFAULT_LIMITS.memoryBytes / 1048576)} MiB memory, ` +
+          `${DEFAULT_LIMITS.pids} pids, ${DEFAULT_LIMITS.cpuQuota / DEFAULT_LIMITS.cpuPeriod} CPU`;
+      }
       const command = isolation.prefix.length ? isolation.prefix[0] : argv[0];
       const args = isolation.prefix.length
         ? [...isolation.prefix.slice(1), ...argv]
@@ -255,6 +272,17 @@ export async function runCode(input: SandboxInput): Promise<SandboxResult> {
       let stderr = "";
       let timedOut = false;
       let settled = false;
+      // Move the jailed child into its own resource group as soon as the pid
+      // exists; the limits then apply to the whole process tree under it.
+      if (group && child.pid) {
+        // Never claim a cap the kernel did not accept: if the move fails the
+        // child runs unlimited and the result must say so.
+        if (!group.attach(child.pid)) {
+          group.remove();
+          group = null;
+          limitsNote = undefined;
+        }
+      }
       const killTree = (sig: NodeJS.Signals) => {
         try {
           if (child.pid) process.kill(-child.pid, sig);

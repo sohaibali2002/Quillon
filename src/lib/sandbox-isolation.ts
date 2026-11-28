@@ -37,10 +37,11 @@ const JAIL_SCRIPT = `set -e
 R="$1"; W="$2"; NM="$3"; NET="$4"; shift 4
 mkdir -p "$R"/usr "$R"/bin "$R"/sbin "$R"/lib "$R"/lib64 "$R"/etc "$R"/tmp "$R"/nm "$R"/proc
 mount --rbind /usr "$R/usr" 2>/dev/null || exit 41
-for d in /bin /sbin /lib /lib64; do [ -e "$d" ] && { mkdir -p "$R$d"; mount --rbind "$d" "$R$d" 2>/dev/null || true; }; done
+mount -o remount,bind,ro "$R/usr" 2>/dev/null || exit 43
+for d in /bin /sbin /lib /lib64; do [ -e "$d" ] && { mkdir -p "$R$d"; mount --rbind "$d" "$R$d" 2>/dev/null || true; mount -o remount,bind,ro "$R$d" 2>/dev/null || true; }; done
 mount -t tmpfs none "$R/tmp" 2>/dev/null || true
 mount -t proc proc "$R/proc" 2>/dev/null || true
-[ -d /etc/ssl ] && { mkdir -p "$R/etc/ssl"; mount --rbind /etc/ssl "$R/etc/ssl" 2>/dev/null || true; }
+[ -d /etc/ssl ] && { mkdir -p "$R/etc/ssl"; mount --rbind /etc/ssl "$R/etc/ssl" 2>/dev/null || true; mount -o remount,bind,ro "$R/etc/ssl" 2>/dev/null || true; }
 [ -n "$NM" ] && { mkdir -p "$R/nm"; mount --rbind "$NM" "$R/nm" 2>/dev/null || true; }
 printf 'root:x:0:0:root:/root:/bin/sh\\n' > "$R/etc/passwd"
 if [ "$NET" = "1" ] && [ -r /etc/resolv.conf ]; then cp /etc/resolv.conf "$R/etc/resolv.conf" 2>/dev/null || : > "$R/etc/resolv.conf"; else : > "$R/etc/resolv.conf"; fi

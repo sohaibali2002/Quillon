@@ -1,7 +1,13 @@
 import type { NextConfig } from "next";
+import { securityHeaders } from "./src/lib/security-headers";
 
 const nextConfig: NextConfig = {
+  // No framework banner in every response.
+  poweredByHeader: false,
   allowedDevOrigins: ["*.vercel.run", "preview-check.vercel.run:3000", "localhost:3000", "127.0.0.1:3000"],
+  async headers() {
+    return [{ source: "/:path*", headers: securityHeaders() }];
+  },
   async rewrites() {
     return {
       beforeFiles: [

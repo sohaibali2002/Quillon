@@ -6,7 +6,8 @@
 // state-changing ops write a fail-closed audit record first: if the record
 // cannot be written the action is refused.
 import { z } from "zod";
-import { guard, audit, auditStrict } from "@/lib/guard";
+import { guard, audit, auditStrict, capabilitySubject } from "@/lib/guard";
+import { enforceRateLimit } from "@/lib/rate-limit";
 import { principalForSession } from "@/lib/rbac";
 import {
   planTransaction, simulate, approve, execute, compensate,
@@ -55,6 +56,8 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const gate = await guard(req, { role: "member" });
   if (gate instanceof Response) return gate;
+  const limited = enforceRateLimit(capabilitySubject(gate), "transactions", 30, 60_000);
+  if (limited) return limited;
   const parsed = schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return Response.json({ error: { message: "Invalid transaction operation." } }, { status: 400 });
@@ -63,10 +66,11 @@ export async function POST(req: Request) {
   const who = principalForSession(gate);
   // Open mode (local dev only, never production) has no second human, so the
   // built-in operator label stands in as the approver and the maker is "open".
-  const maker: TxScope = { tenant: who.tenant, actor: who.owner };
+  const maker: TxScope = { tenant: who.tenant, actor: who.owner, roles: gate.roles };
   const approver: TxScope = {
     tenant: who.tenant,
     actor: gate.sub === "open" ? "open-mode-operator" : who.owner,
+    roles: gate.roles,
   };
   try {
     switch (body.op) {

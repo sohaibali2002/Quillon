@@ -15,6 +15,7 @@
 // execution is claimed atomically so two workers cannot run the same plan.
 import { createHash, randomUUID } from "node:crypto";
 import { getDb } from "@/lib/db";
+import { roleOf } from "@/lib/rbac";
 
 export interface PlannedAction {
   kind: string;
@@ -76,13 +77,19 @@ export interface Transaction {
 export interface TxScope {
   tenant: string;
   actor: string;
+  /**
+   * Roles the actor holds. High-impact plans need an admin approver, so a
+   * caller that omits roles cannot approve one: absence of evidence is not
+   * evidence of authority.
+   */
+  roles?: string[];
 }
 
 function normaliseScope(scope: TxScope): TxScope {
   const tenant = scope.tenant?.trim();
   const actor = scope.actor?.trim();
   if (!tenant || !actor) throw new Error("A transaction scope needs a tenant and an actor.");
-  return { tenant, actor };
+  return { tenant, actor, ...(scope.roles ? { roles: scope.roles } : {}) };
 }
 
 /** Recursive key-sorted JSON, so the same plan always hashes the same. */
@@ -242,11 +249,14 @@ export async function simulate(scope: TxScope, id: string): Promise<Transaction>
   for (const a of tx.actions) {
     const impl = actionTypes.get(a.kind);
     if (!impl) throw new Error(`No implementation registered for action kind "${a.kind}".`);
-    const effect = impl.simulate
-      ? await impl.simulate(a.payload)
+    // `simulated` records whether an oracle actually ran. A plan whose effects
+    // are only guesses cannot be signed off as high-impact work.
+    const real = Boolean(impl.simulate);
+    const effect = real
+      ? await impl.simulate!(a.payload)
       : { expected: a.expected ?? "no simulation registered" };
-    effects.push({ action: a.id, kind: a.kind, target: a.target, effect });
-    replay(id, "simulate", { action: a.id, kind: a.kind, effect });
+    effects.push({ action: a.id, kind: a.kind, target: a.target, effect, simulated: real });
+    replay(id, "simulate", { action: a.id, kind: a.kind, effect, simulated: real });
   }
   getDb()
     .prepare("UPDATE transactions SET status='awaiting_approval', simulation=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND org=?")
@@ -270,6 +280,19 @@ export function approve(scope: TxScope, id: string, approved: boolean): Transact
     Boolean(a && b && a.trim().toLowerCase() === b.trim().toLowerCase());
   if (same(who.actor, tx.created_by)) {
     throw new Error("Separation of duties: the maker of a transaction cannot approve it.");
+  }
+  // High-impact plans need an approver who can write: a viewer (or an identity
+  // the IdP provisioned no role for, which resolves to viewer) cannot sign off
+  // a destructive plan. Callers that declare no roles at all are the engine's
+  // own internal workers and keep the separation-of-duties contract above.
+  if (tx.requires_second_approval) {
+    if (who.roles !== undefined && roleOf(who) === "viewer") {
+      throw new Error("A viewer cannot approve a high-impact plan.");
+    }
+    const sims = Array.isArray(tx.simulation) ? (tx.simulation as unknown[]) : [];
+    if (sims.length !== tx.actions.length) {
+      throw new Error("High-impact plans need a complete simulation of every action before approval.");
+    }
   }
 
   const db = getDb();

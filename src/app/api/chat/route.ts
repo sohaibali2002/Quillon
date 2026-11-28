@@ -25,6 +25,7 @@ import { createOrchestrateTool } from "@/lib/orchestrator";
 import { enforceCapabilities, selectRelevantTools, withRecordPolicy, withToolTimeouts } from "@/lib/tool-policy";
 
 import { guard, capabilitySubject } from "@/lib/guard";
+import { enforceRateLimit } from "@/lib/rate-limit";
 export const maxDuration = 30;
 
 // Parts are validated by shape: known types pass through, anything else is
@@ -69,6 +70,8 @@ const DEFAULT_MAX_STEPS = 8;
 export async function POST(req: Request) {
   const denied = await secure(req);
   if (denied instanceof Response) return denied;
+  const limited = enforceRateLimit(capabilitySubject(denied), "chat", 30, 60_000);
+  if (limited) return limited;
 
   let body: unknown;
   try {

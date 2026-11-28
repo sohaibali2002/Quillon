@@ -625,8 +625,8 @@ async function main() {
       roleOf({ sub: "v1", name: "V", email: "v@x.io", roles: ["viewer"], exp: 0 }) === "viewer",
     );
     record(
-      "RBAC: unprivileged session resolves to member",
-      roleOf({ sub: "m1", name: "M", email: "m@x.io", roles: [], exp: 0 }) === "member",
+      "RBAC: unprovisioned session fails closed to viewer",
+      roleOf({ sub: "m1", name: "M", email: "m@x.io", roles: [], exp: 0 }) === "viewer",
     );
 
     // 2. Capability max-uses holds under concurrent claims (atomic check+increment).

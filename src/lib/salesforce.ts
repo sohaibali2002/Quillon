@@ -9,6 +9,7 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readToken } from "./connectors";
+import { runWithTenant, tenantScope } from "./tenant-context";
 import { safeErrorMessage } from "./sanitize";
 
 const API_VERSION = "v60.0";
@@ -268,10 +269,11 @@ export const SF_TOOLS: { name: string; description: string; endpoint: string }[]
   { name: "limits", description: "Org consumption vs limits", endpoint: "GET /limits" },
 ];
 
-export function buildSalesforceTools(): Record<string, Tool> {
+export function buildSalesforceTools(tenantArg = "default"): Record<string, Tool> {
   const tools: Record<string, Tool> = {};
+  const tenant = tenantScope(tenantArg);
   // Only a connected org gets its schemas in the prompt (same rule as the SDK).
-  if (!readToken("salesforce")) return tools;
+  if (!readToken("salesforce", tenant)) return tools;
 
   const t = (
     name: string,
@@ -282,7 +284,7 @@ export function buildSalesforceTools(): Record<string, Tool> {
     tools[`sf_${name}`] = tool({
       description: `Salesforce: ${description}`,
       inputSchema: schema,
-      execute: execute as never,
+      execute: (args: unknown) => runWithTenant(tenant, () => execute(args)),
     });
   };
 

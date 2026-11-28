@@ -412,4 +412,25 @@ const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS capabilities_org ON capabilities (org, expires_at);
     `,
   },
+  {
+    id: 18,
+    name: "tenant-scope-resources",
+    // Connector credentials, MCP server configs and uploaded files move under
+    // tenant (and where personal, owner) scope. Legacy rows land in the
+    // "legacy" sentinel tenant so nothing pre-migration is shared by accident.
+    sql: `
+      ALTER TABLE mcp_servers ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'legacy';
+      CREATE INDEX IF NOT EXISTS mcp_servers_tenant ON mcp_servers (tenant_id, created_at);
+      CREATE TABLE IF NOT EXISTS uploads (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        media_type TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE INDEX IF NOT EXISTS uploads_tenant ON uploads (tenant_id, owner_id);
+    `,
+  },
 ];

@@ -15,6 +15,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readToken } from "./connectors";
+import { runWithTenant, tenantScope } from "./tenant-context";
 import { safeErrorMessage } from "./sanitize";
 
 const HOST_SUFFIX = ".suitetalk.api.netsuite.com";
@@ -229,16 +230,17 @@ export const NS_TOOLS: { name: string; description: string; endpoint: string }[]
   { name: "metadata", description: "Record type metadata: fields, sublists and their types", endpoint: "GET /record/v1/metadata-catalog/{type}" },
 ];
 
-export function buildNetSuiteTools(): Record<string, Tool> {
+export function buildNetSuiteTools(tenantArg = "default"): Record<string, Tool> {
   const tools: Record<string, Tool> = {};
+  const tenant = tenantScope(tenantArg);
   // Only a connected account gets its schemas in the prompt (same rule as the SDK).
-  if (!readToken("netsuite")) return tools;
+  if (!readToken("netsuite", tenant)) return tools;
 
   const t = (name: string, description: string, schema: z.ZodTypeAny, execute: (input: unknown) => Promise<unknown>) => {
     tools[`ns_${name}`] = tool({
       description: `NetSuite: ${description}`,
       inputSchema: schema,
-      execute: execute as never,
+      execute: (args: unknown) => runWithTenant(tenant, () => execute(args)),
     });
   };
 

@@ -71,10 +71,9 @@ export async function discoverEndpoints(issuer: string): Promise<IdpEndpoints> {
 
 export function secretKey(): string {
   // Fail closed in production: the dev fallback needs an explicit opt-out.
-  return requireSecret("AUTH_SECRET", [
-    process.env.AUTH_SECRET,
-    process.env.AUTH_CLIENT_SECRET,
-  ]);
+  // No fallback to the OAuth client secret: the session-signing key must be
+  // independent of any secret the identity provider also holds.
+  return requireSecret("AUTH_SECRET", [process.env.AUTH_SECRET]);
 }
 
 function b64url(input: Buffer | string): string {

@@ -8,6 +8,7 @@ import type { ToolSet } from "ai";
 import { createHash, randomUUID } from "node:crypto";
 import { getDb } from "@/lib/db";
 import { encryptToken, decryptToken, connectorsSecret } from "@/lib/connectors";
+import { tenantScope } from "@/lib/tenant-context";
 
 export type McpTransportType = "http" | "sse" | "stdio";
 
@@ -57,14 +58,19 @@ function fromRow(r: McpServerRow): McpServer {
   };
 }
 
-export function listMcpServers(): McpServer[] {
-  return (getDb().prepare("SELECT * FROM mcp_servers ORDER BY created_at ASC").all() as McpServerRow[]).map(fromRow);
+export function listMcpServers(tenant?: string): McpServer[] {
+  const scope = tenantScope(tenant);
+  return (
+    getDb()
+      .prepare("SELECT * FROM mcp_servers WHERE tenant_id = ? ORDER BY created_at ASC")
+      .all(scope) as McpServerRow[]
+  ).map(fromRow);
 }
 
-export function getMcpServer(id: string): McpServer | null {
-  const row = getDb().prepare("SELECT * FROM mcp_servers WHERE id = ?").get(id) as
-    | McpServerRow
-    | undefined;
+export function getMcpServer(id: string, tenant?: string): McpServer | null {
+  const row = getDb()
+    .prepare("SELECT * FROM mcp_servers WHERE id = ? AND tenant_id = ?")
+    .get(id, tenantScope(tenant)) as McpServerRow | undefined;
   return row ? fromRow(row) : null;
 }
 
@@ -75,7 +81,7 @@ export async function addMcpServer(input: {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
-}): Promise<McpServer> {
+}, tenant?: string): Promise<McpServer> {
   const name = input.name.trim().slice(0, 80);
   if (!name) throw new Error("Server name is required.");
   if (input.transport !== "stdio") {
@@ -105,10 +111,11 @@ export async function addMcpServer(input: {
   };
   getDb()
     .prepare(
-      "INSERT INTO mcp_servers (id, name, transport, url, command, args, env, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)",
+      "INSERT INTO mcp_servers (id, tenant_id, name, transport, url, command, args, env, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
     )
     .run(
       server.id,
+      tenantScope(tenant),
       server.name,
       server.transport,
       server.url,
@@ -120,16 +127,18 @@ export async function addMcpServer(input: {
   return server;
 }
 
-export function setMcpServerEnabled(id: string, enabled: boolean): boolean {
+export function setMcpServerEnabled(id: string, enabled: boolean, tenant?: string): boolean {
   const changes = getDb()
-    .prepare("UPDATE mcp_servers SET enabled = ? WHERE id = ?")
-    .run(enabled ? 1 : 0, id).changes;
+    .prepare("UPDATE mcp_servers SET enabled = ? WHERE id = ? AND tenant_id = ?")
+    .run(enabled ? 1 : 0, id, tenantScope(tenant)).changes;
   if (Number(changes) > 0) invalidateMcpCache(id);
   return Number(changes) > 0;
 }
 
-export function deleteMcpServer(id: string): boolean {
-  const changes = getDb().prepare("DELETE FROM mcp_servers WHERE id = ?").run(id).changes;
+export function deleteMcpServer(id: string, tenant?: string): boolean {
+  const changes = getDb()
+    .prepare("DELETE FROM mcp_servers WHERE id = ? AND tenant_id = ?")
+    .run(id, tenantScope(tenant)).changes;
   if (Number(changes) > 0) invalidateMcpCache(id);
   return Number(changes) > 0;
 }
@@ -380,20 +389,35 @@ function dropClient(serverId: string): void {
   });
 }
 
-// Transport-level failures are worth one reconnect; tool errors (which may have
-// side effects) are never retried.
+// Transport-level failures are worth one reconnect — but only while
+// establishing the connection or listing tools. Once a tool invocation has been
+// handed to the client, `fn` is marked started and the caller never retries it:
+// the tool may have taken effect and the error may be nothing more than a lost
+// response, so a replay would duplicate the write.
 function isConnectionError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
   return /closed|disconnect|not connected|terminated|socket|ECONN|EPIPE|fetch failed|network/i.test(msg);
 }
 
 async function withServerClient<T>(server: McpServer, fn: (client: McpClient) => Promise<T>): Promise<T> {
+  let started = false;
+  const guarded = (client: McpClient) => {
+    const wrapped = fn(client);
+    // Mark as started on the next tick so connection-establishment failures
+    // (rejected before any I/O on the tool call) can still retry once.
+    void wrapped.then(
+      () => {},
+      () => {},
+    );
+    started = true;
+    return wrapped;
+  };
   try {
-    return await fn(await acquireClient(server));
+    return await guarded(await acquireClient(server));
   } catch (error) {
-    if (!isConnectionError(error)) throw error;
+    if (started || !isConnectionError(error)) throw error;
     dropClient(server.id);
-    return fn(await acquireClient(server));
+    return guarded(await acquireClient(server));
   }
 }
 
@@ -457,9 +481,12 @@ export function verifyToolPin(
 }
 
 /** Clears the pin so the next discovery records the current tool definitions. */
-export function approveMcpToolPin(id: string): void {
-  getDb().prepare("UPDATE mcp_servers SET tool_pin = NULL WHERE id = ?").run(id);
+export function approveMcpToolPin(id: string, tenant?: string): boolean {
+  const changes = getDb()
+    .prepare("UPDATE mcp_servers SET tool_pin = NULL WHERE id = ? AND tenant_id = ?")
+    .run(id, tenantScope(tenant)).changes;
   invalidateMcpCache();
+  return Number(changes) > 0;
 }
 
 function serverToolset(
@@ -478,6 +505,22 @@ function serverToolset(
           if (!impl || typeof (impl as { execute?: unknown }).execute !== "function") {
             throw new Error(`Tool "${name}" was not found on "${server.name}".`);
           }
+          // Re-verify the pin against the LIVE descriptors immediately before
+          // the invocation. Discovery-time checking alone leaves a window in
+          // which a compromised server can serve one schema to the planner and
+          // execute something else.
+          const live = Object.fromEntries(
+            Object.entries(toolSet).map(([n, t]) => [
+              n,
+              {
+                description: (t as { description?: string }).description,
+                inputSchema: (t as { inputSchema?: unknown }).inputSchema,
+              },
+            ]),
+          );
+          verifyToolPin(server, live as Parameters<typeof verifyToolPin>[1]);
+          // No retry wraps this call: once the invocation starts, an error may
+          // mean the write landed and the response was lost.
           return withTimeout(
             impl.execute(args, { toolCallId: randomUUID(), messages: [], context: {} }) as Promise<unknown>,
             `call "${name}" on "${server.name}"`,
@@ -523,11 +566,11 @@ export async function discoverTools(server: McpServer): Promise<DiscoveredTool[]
 
 // Tool discovery across every enabled server; a dead server is reported, not
 // fatal — chat must not lose its built-in tools because one MCP server is down.
-export async function discoverAllTools(): Promise<{
+export async function discoverAllTools(tenant?: string): Promise<{
   tools: DiscoveredTool[];
   errors: { server: string; message: string }[];
 }> {
-  const servers = listMcpServers().filter((s) => s.enabled);
+  const servers = listMcpServers(tenantScope(tenant)).filter((s) => s.enabled);
   const results = await Promise.allSettled(servers.map((s) => discoverTools(s)));
   const tools: DiscoveredTool[] = [];
   const errors: { server: string; message: string }[] = [];
@@ -545,11 +588,11 @@ export async function discoverAllTools(): Promise<{
 // Live toolset for streamText: every enabled server's tools, namespaced by
 // server name so servers with colliding tool names coexist in one loop. Tool
 // descriptors come from the 60s cache; calls go through the pooled client.
-export async function mcpToolset(): Promise<{
+export async function mcpToolset(tenant?: string): Promise<{
   tools: ToolSet;
   errors: { server: string; message: string }[];
 }> {
-  const servers = listMcpServers().filter((s) => s.enabled);
+  const servers = listMcpServers(tenantScope(tenant)).filter((s) => s.enabled);
   const results = await Promise.allSettled(
     servers.map(async (s) => ({ server: s, descriptors: await serverToolDescriptors(s) })),
   );
@@ -576,8 +619,9 @@ export async function callMcpTool(
   serverId: string,
   toolName: string,
   args: Record<string, unknown>,
+  tenant?: string,
 ): Promise<unknown> {
-  const server = getMcpServer(serverId);
+  const server = getMcpServer(serverId, tenantScope(tenant));
   if (!server) throw new Error("Unknown MCP server.");
   if (!server.enabled) throw new Error(`MCP server "${server.name}" is disabled.`);
   return withServerClient(server, async (client) => {
@@ -586,6 +630,18 @@ export async function callMcpTool(
     if (!impl || typeof (impl as { execute?: unknown }).execute !== "function") {
       throw new Error(`Tool "${toolName}" was not found on "${server.name}".`);
     }
+    // Same execution-time pin check as the chat loop: the manual desk must not
+    // become the bypass around a changed tool definition.
+    const live = Object.fromEntries(
+      Object.entries(toolSet).map(([n, t]) => [
+        n,
+        {
+          description: (t as { description?: string }).description,
+          inputSchema: (t as { inputSchema?: unknown }).inputSchema,
+        },
+      ]),
+    );
+    verifyToolPin(server, live as Parameters<typeof verifyToolPin>[1]);
     return withTimeout(
       impl.execute(args, { toolCallId: randomUUID(), messages: [], context: {} }) as Promise<unknown>,
       `call "${toolName}"`,

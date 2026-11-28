@@ -15,6 +15,7 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readToken } from "./connectors";
+import { runWithTenant, tenantScope } from "./tenant-context";
 import { safeErrorMessage } from "./sanitize";
 
 export interface CostpointCred {
@@ -310,16 +311,17 @@ export const CP_TOOLS: { name: string; description: string; endpoint: string }[]
   { name: "voucher_snapshot", description: "One-call AP voucher view: header + detail lines + vendor", endpoint: "GET /VOUCHER_HDR({key}) + chained queries" },
 ];
 
-export function buildCostpointTools(): Record<string, Tool> {
+export function buildCostpointTools(tenantArg = "default"): Record<string, Tool> {
   const tools: Record<string, Tool> = {};
+  const tenant = tenantScope(tenantArg);
   // Only a connected account gets its schemas in the prompt (same rule as the SDK).
-  if (!readToken("costpoint")) return tools;
+  if (!readToken("costpoint", tenant)) return tools;
 
   const t = (name: string, description: string, schema: z.ZodTypeAny, execute: (input: unknown) => Promise<unknown>) => {
     tools[`cp_${name}`] = tool({
       description: `Costpoint: ${description}`,
       inputSchema: schema,
-      execute: execute as never,
+      execute: (args: unknown) => runWithTenant(tenant, () => execute(args)),
     });
   };
 

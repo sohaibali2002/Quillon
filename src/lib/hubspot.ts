@@ -11,6 +11,7 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readToken } from "./connectors";
+import { runWithTenant, tenantScope } from "./tenant-context";
 
 const BASE = "https://api.hubapi.com";
 
@@ -136,16 +137,17 @@ export const HS_TOOLS: { name: string; description: string }[] = [
   { name: "owners", description: "List owners for assignment" },
 ];
 
-export function buildHubSpotTools(): Record<string, Tool> {
+export function buildHubSpotTools(tenantArg = "default"): Record<string, Tool> {
   const tools: Record<string, Tool> = {};
+  const tenant = tenantScope(tenantArg);
   // Only a connected org gets its schemas in the prompt (same rule as the SDK).
-  if (!readToken("hubspot")) return tools;
+  if (!readToken("hubspot", tenant)) return tools;
 
   const t = (name: string, description: string, schema: z.ZodTypeAny, execute: (input: unknown) => Promise<unknown>) => {
     tools[`hs_${name}`] = tool({
       description: `HubSpot: ${description}`,
       inputSchema: schema,
-      execute: execute as never,
+      execute: (args: unknown) => runWithTenant(tenant, () => execute(args)),
     });
   };
 

@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-11-28 (response hardening, honest resource caps)
+
+- Every response now carries a strict security header policy, defined once in
+  `src/lib/security-headers.ts` and applied to `/:path*` from `next.config.ts`:
+  CSP (`default-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`,
+  `base-uri`/`form-action 'self'`), HSTS, `nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy`, a `Permissions-Policy` that denies camera, microphone,
+  geolocation, USB and payment, plus COOP/CORP and
+  `X-Permitted-Cross-Domain-Policies: none`. Only response headers changed, so
+  the page keeps working (`'unsafe-inline'` stays because App Router emits
+  inline bootstrap scripts and styles; `'unsafe-eval'` is development-only).
+  `poweredByHeader: false` stops advertising the framework. Verified on a live
+  `next start`: `curl -I` shows the full set.
+- Sandbox resource caps tear down without failing a finished run. cgroupfs
+  control files cannot be unlinked, so the recursive `rmSync` in
+  `src/lib/cgroup.ts` threw `EPERM` after a run had already produced its result,
+  and left the group behind. Teardown now writes `cgroup.kill`, `rmdir`s the
+  group and never throws. `src/lib/sandbox.ts` also stops claiming a cap the
+  kernel did not accept: when moving the child into the group fails, the group
+  is released and `resourceLimits` is left unset rather than advertised.
+- `scripts/check-security.mjs` grew from 42 to 46 checks: cgroup teardown is
+  idempotent and removes the group, a real sandbox run resolves and leaves no
+  group behind, the production CSP has no `'unsafe-eval'` and blocks framing and
+  plugins, and `next.config` wires the policy to every route with
+  `poweredByHeader: false`.
+
 ## 2026-11-28 (supply chain, live-provider structured output, smoke truth)
 
 - Dependency gate is blocking. `npm run check:audit` fails CI on any high or

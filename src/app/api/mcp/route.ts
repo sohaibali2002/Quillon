@@ -5,7 +5,8 @@ async function secure(req: Request) {
 }
 
 import { z } from "zod";
-import { guard } from "@/lib/guard";
+import { guard, auditStrict, orgForSession, capabilitySubject } from "@/lib/guard";
+import { enforceRateLimit } from "@/lib/rate-limit";
 import { safeErrorMessage } from "@/lib/sanitize";
 import {
   addMcpServer,
@@ -32,12 +33,13 @@ function issues(err: z.ZodError) {
 export async function GET(req: Request) {
   const denied = await secure(req);
   if (denied instanceof Response) return denied;
+  const tenant = orgForSession(denied);
 
-  const servers = listMcpServers();
+  const servers = listMcpServers(tenant);
   if (new URL(req.url).searchParams.get("discover") !== "1") {
     return Response.json({ servers });
   }
-  const { tools, errors } = await discoverAllTools();
+  const { tools, errors } = await discoverAllTools(tenant);
   return Response.json({ servers, tools, errors });
 }
 
@@ -85,10 +87,18 @@ export async function POST(req: Request) {
   const parsed = bodySchema.safeParse(body);
   if (!parsed.success) return badRequest("Invalid request body.", issues(parsed.error));
   const data = parsed.data;
+  const gate = denied;
+  const tenant = orgForSession(gate);
+  const limited = enforceRateLimit(capabilitySubject(gate), "mcp", 120, 60_000);
+  if (limited) return limited;
 
   if (data.action === "add") {
     try {
-      const server = await addMcpServer(data);
+      const server = await addMcpServer(data, tenant);
+      auditStrict(req, gate, "mcp.add", `mcp:${server.id}`, {
+        name: server.name,
+        transport: server.transport,
+      });
       return Response.json({ server }, { status: 201 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -108,37 +118,44 @@ export async function POST(req: Request) {
   }
 
   if (data.action === "approve-tools") {
-    approveMcpToolPin(data.id);
+    if (!approveMcpToolPin(data.id, tenant)) {
+      return Response.json({ error: { message: "MCP server not found." } }, { status: 404 });
+    }
+    auditStrict(req, gate, "mcp.approve_tools", `mcp:${data.id}`, { serverId: data.id });
     return Response.json({ ok: true });
   }
 
   if (data.action === "toggle") {
-    if (!setMcpServerEnabled(data.id, data.enabled)) {
+    if (!setMcpServerEnabled(data.id, data.enabled, tenant)) {
       return Response.json({ error: { message: "MCP server not found." } }, { status: 404 });
     }
+    auditStrict(req, gate, data.enabled ? "mcp.enable" : "mcp.disable", `mcp:${data.id}`, {});
     return Response.json({ ok: true });
   }
 
   const started = Date.now();
   try {
-    const result = await callMcpTool(data.serverId, data.tool, data.args);
+    const result = await callMcpTool(data.serverId, data.tool, data.args, tenant);
     return Response.json({ result, durationMs: Date.now() - started });
   } catch (err) {
+    // Raw server exceptions can carry internal URLs, tokens or stack details;
+    // the desk gets the sanitized message only.
     return Response.json(
-      { error: { message: err instanceof Error ? err.message : String(err) } },
+      { error: { message: safeErrorMessage(err, `Calling "${data.tool}" failed.`) } },
       { status: 502 },
     );
   }
 }
 
 export async function DELETE(req: Request) {
-  const denied = await secure(req);
-  if (denied instanceof Response) return denied;
+  const gate = await secure(req);
+  if (gate instanceof Response) return gate;
 
   const id = new URL(req.url).searchParams.get("id");
   if (!id) return badRequest("id query parameter is required.");
-  if (!deleteMcpServer(id)) {
+  if (!deleteMcpServer(id, orgForSession(gate))) {
     return Response.json({ error: { message: "MCP server not found." } }, { status: 404 });
   }
+  auditStrict(req, gate, "mcp.delete", `mcp:${id}`, {});
   return new Response(null, { status: 204 });
 }

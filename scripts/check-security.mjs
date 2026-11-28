@@ -3,7 +3,7 @@
 // suite is fast enough to run on every commit (wired into CI as check:security).
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +11,8 @@ const sanitize = await import("../src/lib/sanitize.ts");
 const net = await import("../src/lib/net-guard.ts");
 const authority = await import("../src/lib/tool-authority.ts");
 const rbac = await import("../src/lib/rbac.ts");
+const limiter = await import("../src/lib/rate-limit.ts");
+const tenantCtx = await import("../src/lib/tenant-context.ts");
 
 let passed = 0;
 const failures = [];
@@ -184,10 +186,13 @@ await check("enforceToolAuthority filters the toolset and QUILLON_TOOL_DENY wins
 });
 
 // ---------- RBAC / tenancy ----------
-await check("roleOf maps unknown roles to viewer and empty roles to member", () => {
+await check("roleOf grants member only on an explicit member role and fails closed otherwise", () => {
   assert.equal(rbac.roleOf({ roles: ["viewer"] }), "viewer");
-  assert.equal(rbac.roleOf({}), "member");
+  assert.equal(rbac.roleOf({ roles: ["member"] }), "member");
   assert.equal(rbac.roleOf({ roles: ["admin"] }), "admin");
+  // Updated: an empty role claim is not a grant. Fail-closed means a session
+  // the IdP has not provisioned a role for gets viewer, never write access.
+  assert.equal(rbac.roleOf({}), "viewer");
   // Unrecognised role claims fail closed: no write access without a known role.
   assert.equal(rbac.roleOf({ roles: ["nonsense"] }), "viewer");
   assert.equal(rbac.roleOf({ roles: ["nonsense", "admin"] }), "admin");
@@ -563,7 +568,34 @@ await check("production refuses netns and unjailed code execution", () => {
   }
 });
 
-// ---------- supply chain: the dependency gate is blocking ----------
+// ---------- code sandbox: resource caps must not fail a finished run ----------
+const cgroupModule = await import("../src/lib/cgroup.ts");
+const sandboxModule = await import("../src/lib/sandbox.ts");
+
+await check("cgroup teardown removes the group without throwing (cgroupfs files cannot be unlinked)", () => {
+  const handle = cgroupModule.createCgroup();
+  if (!handle) return; // no writable cgroup v2 hierarchy on this host
+  handle.remove(); // a recursive unlink of the control files throws EPERM
+  assert.equal(existsSync(handle.dir), false, "the one-run cgroup is gone from the hierarchy");
+  handle.remove(); // and teardown is idempotent
+});
+
+await check("a completed sandbox run resolves even when its resource caps are torn down", async () => {
+  const { readdirSync } = await import("node:fs");
+  const groupsBefore = readdirSync("/sys/fs/cgroup").filter((n) => n.startsWith("quillon-"));
+  const result = await sandboxModule.runCode({ language: "python", code: "print(6*7)", timeoutMs: 8000 });
+  assert.equal(result.exitCode, 0, `run failed: ${result.error ?? result.stderr}`);
+  assert.match(result.stdout, /42/);
+  // The cap string is a promise to the caller: the run's own group must be gone.
+  const groupsAfter = readdirSync("/sys/fs/cgroup").filter((n) => n.startsWith("quillon-"));
+  assert.deepEqual(
+    groupsAfter.filter((n) => !groupsBefore.includes(n)),
+    [],
+    `teardown left a cgroup behind: ${groupsAfter.join(", ")}`,
+  );
+});
+
+
 await check("the dependency-advisory gate fails on an unaccepted advisory and passes on the current tree", () => {
   const root = new URL("..", import.meta.url).pathname;
   const tmp = join(tmpdir(), `quillon-audit-${process.pid}.json`);
@@ -593,6 +625,133 @@ await check("the dependency-advisory gate fails on an unaccepted advisory and pa
   } finally {
     rmSync(tmp, { force: true });
   }
+});
+
+await check("a viewer or unprovisioned approver cannot sign off a high-impact plan", async () => {
+  const acme = { tenant: "acme.test", actor: "maker@acme.test" };
+  const plan = tx.planTransaction(acme, "Delete a record", "role gate", [
+    { kind: "test.delete_record", target: "rec:11", payload: {} },
+  ]);
+  await tx.simulate(acme, plan.id);
+  assert.throws(
+    () => tx.approve({ tenant: "acme.test", actor: "viewer@acme.test", roles: ["viewer"] }, plan.id, true),
+    /viewer cannot approve/,
+  );
+  assert.throws(
+    () => tx.approve({ tenant: "acme.test", actor: "nobody@acme.test", roles: [] }, plan.id, true),
+    /viewer cannot approve/,
+    "an identity with no role claim must fail closed",
+  );
+  const member = tx.approve(
+    { tenant: "acme.test", actor: "checker@acme.test", roles: ["member"] },
+    plan.id,
+    true,
+  );
+  assert.equal(member.status, "awaiting_approval");
+});
+
+await check("a high-impact plan cannot be approved before it is simulated", () => {
+  const acme = { tenant: "acme.test", actor: "maker@acme.test" };
+  const plan = tx.planTransaction(acme, "Delete a record", "no simulation", [
+    { kind: "test.delete_record", target: "rec:12", payload: {} },
+  ]);
+  // Approving straight from "planned" is refused: nobody has seen the effects.
+  assert.throws(
+    () => tx.approve({ tenant: "acme.test", actor: "checker@acme.test", roles: ["member"] }, plan.id, true),
+    /Cannot approve a transaction in status planned/,
+  );
+});
+
+// ---------- Rate limiting ----------
+await check("rate limiter allows the budget, then answers 429 with Retry-After", () => {
+  limiter.resetRateLimits();
+  const now = 1_000_000;
+  for (let i = 0; i < 3; i++) {
+    const v = limiter.take("route:user-a", 3, 60_000, now);
+    assert.equal(v.ok, true, `request ${i + 1} should be inside the budget`);
+  }
+  const blocked = limiter.take("route:user-a", 3, 60_000, now);
+  assert.equal(blocked.ok, false);
+  assert.ok(blocked.retryAfterMs > 0);
+
+  // Another identity is unaffected, and the window really does reset.
+  assert.equal(limiter.take("route:user-b", 3, 60_000, now).ok, true);
+  assert.equal(limiter.take("route:user-a", 3, 60_000, now + 60_001).ok, true);
+
+  // A zero budget denies everything rather than meaning "unlimited".
+  limiter.resetRateLimits();
+  assert.equal(limiter.take("route:off", 0, 1000, now).ok, false);
+});
+
+await check("enforceRateLimit returns a 429 body with Retry-After, and null inside budget", async () => {
+  limiter.resetRateLimits();
+  const first = limiter.enforceRateLimit("acme:user-a", "test-route", 1, 60_000);
+  assert.equal(first, null);
+  const second = limiter.enforceRateLimit("acme:user-a", "test-route", 1, 60_000);
+  assert.ok(second instanceof Response, "the over-budget call must be refused");
+  assert.equal(second.status, 429);
+  assert.ok(Number(second.headers.get("retry-after")) >= 1);
+  const body = await second.json();
+  assert.equal(body.error.code, "rate_limited");
+  limiter.resetRateLimits();
+});
+
+// ---------- Tenant context ----------
+await check("tenant context isolates concurrent work and never leaks a default", async () => {
+  const [a, b] = await Promise.all([
+    tenantCtx.runWithTenant("acme", async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      return tenantCtx.currentTenant();
+    }),
+    tenantCtx.runWithTenant("globex", async () => {
+      await new Promise((r) => setTimeout(r, 1));
+      return tenantCtx.currentTenant();
+    }),
+  ]);
+  assert.equal(a, "acme");
+  assert.equal(b, "globex");
+  // Outside any scope there is no tenant: callers must pass one explicitly
+  // rather than inheriting whatever ran last.
+  assert.notEqual(tenantCtx.currentTenant(), "globex");
+  assert.equal(tenantCtx.tenantScope("explicit"), "explicit");
+});
+
+// ---------- response security headers ----------
+const headersModule = await import("../src/lib/security-headers.ts");
+
+await check("every route carries a strict response header policy", () => {
+  const prod = Object.fromEntries(headersModule.securityHeaders("production").map((h) => [h.key, h.value]));
+  const csp = prod["Content-Security-Policy"];
+  assert.ok(csp, "no Content-Security-Policy");
+  for (const directive of [
+    "default-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+  ]) {
+    assert.ok(csp.includes(directive), `CSP is missing "${directive}"`);
+  }
+  assert.ok(!/script-src[^;]*'unsafe-eval'/.test(csp), "production CSP allows eval");
+  assert.equal(prod["X-Content-Type-Options"], "nosniff");
+  assert.equal(prod["X-Frame-Options"], "DENY");
+  assert.match(prod["Strict-Transport-Security"], /max-age=31536000/);
+  assert.match(prod["Referrer-Policy"], /^strict-origin/);
+  assert.match(prod["Permissions-Policy"], /camera=\(\)/);
+  const dev = Object.fromEntries(headersModule.securityHeaders("development").map((h) => [h.key, h.value]));
+  assert.ok(dev["Content-Security-Policy"].includes("'unsafe-eval'"), "dev CSP needs eval for fast refresh");
+});
+
+await check("next.config applies the header policy to every route", async () => {
+  const cfg = (await import("../next.config.ts")).default;
+  const rules = await cfg.headers();
+  assert.equal(rules.length, 1, "one catch-all header rule expected");
+  assert.equal(rules[0].source, "/:path*");
+  assert.ok(
+    rules[0].headers.some((h) => h.key === "Content-Security-Policy"),
+    "the catch-all rule does not set the CSP",
+  );
+  assert.equal(cfg.poweredByHeader, false, "the framework banner must not be advertised");
 });
 
 console.log(`\n${passed} passed${failures.length ? `, ${failures.length} FAILED` : ""}`);

@@ -10,11 +10,11 @@ export function isAdmin(session: { roles?: string[]; email?: string } | null): b
 export function roleOf(session: { roles?: string[] }): Role {
   const roles = session.roles ?? [];
   if (roles.includes("admin")) return "admin";
+  if (roles.includes("member")) return "member";
   if (roles.includes("viewer")) return "viewer";
-  // A session with no role claim at all is a signed-in user (member). Any
-  // unrecognised role is not evidence of write access, so it fails closed to
-  // viewer rather than silently granting member.
-  if (roles.length === 0) return "member";
+  // No recognised role = no write permission: a user the IdP has not
+  // provisioned a role for is a viewer. Write access (member) requires an
+  // explicit role assignment from the identity provider.
   return "viewer";
 }
 

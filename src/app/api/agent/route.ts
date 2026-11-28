@@ -28,6 +28,7 @@ import { enforceCapabilities, selectRelevantTools, withRecordPolicy, withToolTim
 import { createOrchestrateTool } from "@/lib/orchestrator";
 
 import { guard, capabilitySubject } from "@/lib/guard";
+import { enforceRateLimit } from "@/lib/rate-limit";
 export const maxDuration = 60;
 
 const summarySchema = z.object({
@@ -70,6 +71,8 @@ function promptFromBody(body: {
 export async function POST(req: Request) {
   const denied = await secure(req);
   if (denied instanceof Response) return denied;
+  const limited = enforceRateLimit(capabilitySubject(denied), "agent", 20, 60_000);
+  if (limited) return limited;
 
   let raw: unknown;
   try {

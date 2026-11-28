@@ -73,16 +73,17 @@ export async function unifiedToolset(
   conversationId: string,
   identity: MemoryIdentity = { tenant: "system", owner: "system" },
 ): Promise<UnifiedToolset> {
-  const mcp = await mcpToolset();
+  const tenant = identity.tenant ?? "default";
+  const mcp = await mcpToolset(tenant);
   const groups: [ToolSource, Record<string, Tool>][] = [
     ["builtin", builtinTools],
-    // buildConnectedTools only emits tools for platforms with a saved token,
-    // so every connector entry here is live.
-    ["connector", buildConnectedTools(ENTERPRISE_RECIPES.filter((r) => !DEEP_RECIPES.has(r.id)))],
-    ["salesforce", buildSalesforceTools()],
-    ["hubspot", buildHubSpotTools()],
-    ["netsuite", buildNetSuiteTools()],
-    ["costpoint", buildCostpointTools()],
+    // buildConnectedTools only emits tools for platforms with a saved token
+    // for THIS tenant, so every connector entry here is live and tenant-scoped.
+    ["connector", buildConnectedTools(ENTERPRISE_RECIPES.filter((r) => !DEEP_RECIPES.has(r.id)), tenant)],
+    ["salesforce", buildSalesforceTools(tenant)],
+    ["hubspot", buildHubSpotTools(tenant)],
+    ["netsuite", buildNetSuiteTools(tenant)],
+    ["costpoint", buildCostpointTools(tenant)],
     // OpenRouter registers only when OPENROUTER_API_KEY is set (36 or_* tools).
     ["openrouter", buildOpenRouterTools()],
     ["memory", createMemoryTools(identity, conversationId)],

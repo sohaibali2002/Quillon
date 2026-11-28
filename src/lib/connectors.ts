@@ -1,9 +1,11 @@
 // Connector framework: an enterprise registry of data sources the assistant
 // may use. Each connector declares its OAuth settings and the tools it adds.
 // Tokens are stored encrypted at rest (AES-256-GCM) keyed by CONNECTORS_SECRET.
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
+import type { Buffer as NodeBuffer } from "node:buffer";
 import { getDb } from "./db";
 import { requireSecret } from "./guard";
+import { tenantScope } from "./tenant-context";
 
 export type ConnectorCategory = "files" | "tickets" | "chat" | "crm" | "knowledge" | "custom";
 
@@ -133,20 +135,43 @@ export function catalogFor(clientId?: string) {
   }));
 }
 
-const KEY = (secret: string) => createHash("sha256").update(secret).digest();
+// Key derivation: purpose-specific keys via HKDF, never a raw hash of the
+// shared secret. The info string separates session-signing, connector-encryption
+// and audit-signing keys so a key for one purpose cannot verify another.
+export function derivePurposeKey(secret: string, purpose: string, length = 32): NodeBuffer {
+  return Buffer.from(hkdfSync("sha256", secret, "quillon-key-salt", `quillon/${purpose}`, length));
+}
 
-export function encryptToken(secret: string, plaintext: string): string {
+const KEY = (secret: string) => derivePurposeKey(secret, "connector-token");
+
+/**
+ * AES-256-GCM with AAD binding the ciphertext to its (tenant, connector,
+ * kind) record, so a token blob copied into another tenant's row or another
+ * connector's row fails to decrypt. v2 blobs start with "v2."; the legacy
+ * format (no AAD, raw-SHA-256 key) is still read for migration.
+ */
+export function encryptToken(secret: string, plaintext: string, aad?: string): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", KEY(secret), iv);
+  if (aad) cipher.setAAD(Buffer.from(aad, "utf8"));
   const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   return [
+    "v2",
     iv.toString("base64url"),
     cipher.getAuthTag().toString("base64url"),
     enc.toString("base64url"),
   ].join(".");
 }
 
-export function decryptToken(secret: string, stored: string): string {
+export function decryptToken(secret: string, stored: string, aad?: string): string {
+  if (stored.startsWith("v2.")) {
+    const [, ivPart, tagPart, dataPart] = stored.split(".");
+    if (!ivPart || !tagPart || !dataPart) throw new Error("Malformed token blob");
+    const decipher = createDecipheriv("aes-256-gcm", KEY(secret), Buffer.from(ivPart, "base64url"));
+    if (aad) decipher.setAAD(Buffer.from(aad, "utf8"));
+    decipher.setAuthTag(Buffer.from(tagPart, "base64url"));
+    return Buffer.concat([decipher.update(Buffer.from(dataPart, "base64url")), decipher.final()]).toString("utf8");
+  }
   const [ivPart, tagPart, dataPart] = stored.split(".");
   if (!ivPart || !tagPart || !dataPart) throw new Error("Malformed token blob");
   const decipher = createDecipheriv("aes-256-gcm", KEY(secret), Buffer.from(ivPart, "base64url"));
@@ -155,10 +180,12 @@ export function decryptToken(secret: string, stored: string): string {
 }
 
 export function connectorsSecret(): string {
-  // Fail closed in production; AUTH_SECRET_PREVIOUS keeps rotated-key tokens readable.
+  // Fail closed in production; CONNECTORS_SECRET_PREVIOUS keeps rotated-key
+  // tokens readable. No fall back to AUTH_SECRET: one stolen secret must not
+  // open both sessions and every stored credential.
   return requireSecret("CONNECTORS_SECRET", [
     process.env.CONNECTORS_SECRET,
-    process.env.AUTH_SECRET,
+    process.env.CONNECTORS_SECRET_PREVIOUS,
   ]);
 }
 
@@ -174,60 +201,88 @@ export function ensureConnectorTables() {
       updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     );
   `);
+  // Tenant isolation migration: v1 keyed credentials by connector_id alone,
+  // which let one tenant's authorized paths reach another tenant's token.
+  // Recreate with (tenant_id, connector_id) and carry existing rows into the
+  // default tenant; legacy rows have no AAD binding and stay readable until
+  // they are next saved.
+  const cols = getDb().prepare("PRAGMA table_info(connector_tokens)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === "tenant_id")) {
+    getDb().exec(`
+      ALTER TABLE connector_tokens RENAME TO connector_tokens_v1;
+      CREATE TABLE connector_tokens (
+        tenant_id TEXT NOT NULL DEFAULT 'default',
+        connector_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('oauth2', 'pat')),
+        token_encrypted TEXT NOT NULL,
+        account TEXT,
+        scopes TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        PRIMARY KEY (tenant_id, connector_id)
+      );
+      INSERT OR IGNORE INTO connector_tokens (tenant_id, connector_id, kind, token_encrypted, account, scopes, created_at, updated_at)
+        SELECT 'default', connector_id, kind, token_encrypted, account, scopes, created_at, updated_at FROM connector_tokens_v1;
+      DROP TABLE connector_tokens_v1;
+    `);
+  }
 }
 
-export function saveToken(connectorId: string, kind: "oauth2" | "pat", token: string, account: string | null, scopes: string[]) {
+export function saveToken(connectorId: string, kind: "oauth2" | "pat", token: string, account: string | null, scopes: string[], tenant?: string) {
+  const scope = tenantScope(tenant);
   ensureConnectorTables();
   getDb()
     .prepare(
-      `INSERT INTO connector_tokens (connector_id, kind, token_encrypted, account, scopes, updated_at)
-       VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-       ON CONFLICT(connector_id) DO UPDATE SET
+      `INSERT INTO connector_tokens (tenant_id, connector_id, kind, token_encrypted, account, scopes, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+       ON CONFLICT(tenant_id, connector_id) DO UPDATE SET
          kind=excluded.kind, token_encrypted=excluded.token_encrypted,
          account=excluded.account, scopes=excluded.scopes,
          updated_at=excluded.updated_at`,
     )
-    .run(connectorId, kind, encryptToken(connectorsSecret(), token), account, JSON.stringify(scopes));
+    .run(scope, connectorId, kind, encryptToken(connectorsSecret(), token, `${scope}:${connectorId}:token`), account, JSON.stringify(scopes));
 }
 
-export function readToken(connectorId: string): string | null {
+export function readToken(connectorId: string, tenant?: string): string | null {
+  const scope = tenantScope(tenant);
   ensureConnectorTables();
-  const row = getDb().prepare("SELECT token_encrypted FROM connector_tokens WHERE connector_id = ?").get(connectorId) as
+  const row = getDb().prepare("SELECT token_encrypted FROM connector_tokens WHERE tenant_id = ? AND connector_id = ?").get(scope, connectorId) as
     | { token_encrypted: string }
     | undefined;
   if (!row) return null;
   try {
-    return decryptToken(connectorsSecret(), row.token_encrypted);
+    return decryptToken(connectorsSecret(), row.token_encrypted, `${scope}:${connectorId}:token`);
   } catch {
     return null;
   }
 }
 
 /** Token plus the connector's Account field (subdomain, datacenter, app key, ...). */
-export function readCredential(connectorId: string): { token: string; account: string | null } | null {
+export function readCredential(connectorId: string, tenant?: string): { token: string; account: string | null } | null {
+  const scope = tenantScope(tenant);
   ensureConnectorTables();
   const row = getDb()
-    .prepare("SELECT token_encrypted, account FROM connector_tokens WHERE connector_id = ?")
-    .get(connectorId) as { token_encrypted: string; account: string | null } | undefined;
+    .prepare("SELECT token_encrypted, account FROM connector_tokens WHERE tenant_id = ? AND connector_id = ?")
+    .get(scope, connectorId) as { token_encrypted: string; account: string | null } | undefined;
   if (!row) return null;
   try {
-    return { token: decryptToken(connectorsSecret(), row.token_encrypted), account: row.account ?? null };
+    return { token: decryptToken(connectorsSecret(), row.token_encrypted, `${scope}:${connectorId}:token`), account: row.account ?? null };
   } catch {
     return null;
   }
 }
 
-export function deleteToken(connectorId: string) {
+export function deleteToken(connectorId: string, tenant?: string) {
+  const scope = tenantScope(tenant);
   ensureConnectorTables();
-  getDb().prepare("DELETE FROM connector_tokens WHERE connector_id = ?").run(connectorId);
+  getDb().prepare("DELETE FROM connector_tokens WHERE tenant_id = ? AND connector_id = ?").run(scope, connectorId);
 }
 
-export function connectedIds(): string[] {
+/** Connectors with a saved token, optionally scoped to one tenant (default: all tenants — admin views only). */
+export function connectedIds(tenant?: string): string[] {
   ensureConnectorTables();
-  return (
-    getDb()
-      .prepare("SELECT connector_id FROM connector_tokens")
-      .all()
-      .map((r) => String((r as { connector_id: string }).connector_id))
-  );
+  const rows = tenant
+    ? getDb().prepare("SELECT connector_id FROM connector_tokens WHERE tenant_id = ?").all(tenantScope(tenant))
+    : getDb().prepare("SELECT DISTINCT connector_id FROM connector_tokens").all();
+  return rows.map((r) => String((r as { connector_id: string }).connector_id));
 }
