@@ -9,6 +9,11 @@ import { register } from "node:module";
 
 register("./ts-resolve.mjs", import.meta.url);
 
+// The mock environment listens on loopback; allowed only because this check
+// names the destination in both egress settings.
+process.env.QUILLON_EGRESS_ALLOWLIST = "127.0.0.1";
+process.env.QUILLON_EGRESS_PRIVATE_HOSTS = "127.0.0.1";
+
 const { CostpointClient, parseCostpointCredential, extractCostpointError, keyLiteral, keyPath, serviceRootOf, deleteRecordGuarded, patchRecordGuarded } =
   await import("../src/lib/costpoint.ts");
 

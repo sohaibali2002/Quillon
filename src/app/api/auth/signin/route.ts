@@ -23,9 +23,12 @@ export async function GET(req: NextRequest) {
 
   const { verifier, challenge } = pkcePair();
   const state = crypto.randomUUID();
+  // Nonce binds the ID token to this browser's sign-in attempt; the callback
+  // rejects a token that carries a different one.
+  const nonce = crypto.randomUUID();
 
   const jar = await cookies();
-  jar.set(PKCE_COOKIE, JSON.stringify({ verifier, state, redirectTo }), {
+  jar.set(PKCE_COOKIE, JSON.stringify({ verifier, state, nonce, redirectTo }), {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
@@ -43,6 +46,7 @@ export async function GET(req: NextRequest) {
   authorizeUrl.searchParams.set("redirect_uri", redirectUri);
   authorizeUrl.searchParams.set("scope", config.scopes);
   authorizeUrl.searchParams.set("state", state);
+  authorizeUrl.searchParams.set("nonce", nonce);
   authorizeUrl.searchParams.set("code_challenge", challenge);
   authorizeUrl.searchParams.set("code_challenge_method", "S256");
 

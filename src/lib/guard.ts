@@ -1,7 +1,7 @@
 // Route security: authentication, RBAC, CSRF and audit logging for every
 // sensitive API route. Enforcement turns on when an identity provider is
 // configured or QUILLON_REQUIRE_AUTH=1; local development stays open.
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { getDb } from "@/lib/db";
 import { readSession, ssoConfig, type Session } from "@/lib/auth";
 import { roleOf as baseRoleOf, orgForSession as tenantOrgOf, type Role } from "@/lib/rbac";
@@ -201,12 +201,33 @@ function writeAudit(
     | { hash: string | null }
     | undefined;
   const prevHash = last?.hash ?? null;
-  const hash = createHash("sha256")
-    .update(JSON.stringify([prevHash, org, actor, action, resource, detailText, ip, at]))
-    .digest("hex");
+  const hash = chainHash(
+    JSON.stringify([prevHash, org, actor, action, resource, detailText, ip, at]),
+  );
   db.prepare(
     "INSERT INTO audit_log (org, actor, action, resource, detail, ip, at, prev_hash, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(org, actor, action, resource, detailText, ip, at, prevHash, hash);
+}
+
+// The chain is keyed when QUILLON_AUDIT_KEY is set, so an attacker with write
+// access to the database cannot recompute it; without the key it stays the
+// plain SHA-256 chain (still detects naive edits, and legacy rows stay valid).
+function chainKey(): string | null {
+  const key = process.env.QUILLON_AUDIT_KEY?.trim();
+  return key && key.length >= 16 ? key : null;
+}
+
+function chainHashes(payload: string): { keyed: string | null; plain: string } {
+  const key = chainKey();
+  return {
+    keyed: key ? createHmac("sha256", key).update(payload).digest("hex") : null,
+    plain: createHash("sha256").update(payload).digest("hex"),
+  };
+}
+
+function chainHash(payload: string): string {
+  const { keyed, plain } = chainHashes(payload);
+  return keyed ?? plain;
 }
 
 export function audit(
@@ -254,25 +275,28 @@ export function verifyAuditChain(limit = 500): { ok: boolean; checked: number; b
     .get(limit) as { hash: string | null } | undefined;
   let prevHash: string | null = seedRow?.hash ?? null;
   let brokenAt: number | null = null;
+  // Once a keyed row appears, a plain row after it is a downgrade attempt.
+  let keyedSeen = false;
   for (const r of rows) {
-    const expected = createHash("sha256")
-      .update(
-        JSON.stringify([
-          prevHash,
-          String(r.org),
-          String(r.actor),
-          String(r.action),
-          String(r.resource),
-          String(r.detail),
-          (r.ip as string | null) ?? null,
-          String(r.at),
-        ]),
-      )
-      .digest("hex");
-    if (r.hash && r.hash !== expected) {
+    const { keyed, plain } = chainHashes(
+      JSON.stringify([
+        prevHash,
+        String(r.org),
+        String(r.actor),
+        String(r.action),
+        String(r.resource),
+        String(r.detail),
+        (r.ip as string | null) ?? null,
+        String(r.at),
+      ]),
+    );
+    const matchesKeyed = keyed !== null && r.hash === keyed;
+    const matchesPlain = r.hash === plain;
+    if (r.hash && !matchesKeyed && !(matchesPlain && !keyedSeen)) {
       brokenAt = Number(r.id);
       break;
     }
+    if (matchesKeyed) keyedSeen = true;
     prevHash = (r.hash as string | null) ?? prevHash;
   }
   return { ok: brokenAt === null, checked: rows.length, brokenAt };

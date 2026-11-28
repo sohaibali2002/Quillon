@@ -125,7 +125,7 @@ label { font-size: 0.8rem; color: var(--muted); display: block; margin: 8px 0 4p
 
 .gp-btn, .gp-ghost {
   border-radius: 8px; border: 1px solid var(--border);
-  background: var(--accent); color: var(--ink);
+  background: var(--accent); color: var(--accent-ink);
   font: inherit; font-size: 0.85rem; font-weight: 600;
   padding: 7px 14px; cursor: pointer;
 }
@@ -341,7 +341,7 @@ label { font-size: 0.8rem; color: var(--muted); display: block; margin: 8px 0 4p
 .gp-alert-err { color: var(--err); background: var(--err-wash); border-color: var(--err-line); }
 .gp-alert-warn { color: var(--warn); background: var(--warn-wash); border-color: var(--warn-line); }
 
-.gp-btn { color: var(--ink); }
+.gp-btn { color: var(--accent-ink); }
 .gp-split-run, .gp-meter-run { background: var(--data-1); }
 .gp-split-ok { background: var(--data-3); }
 .gp-split-warn { background: var(--data-2); }

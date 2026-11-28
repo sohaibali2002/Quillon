@@ -433,4 +433,196 @@ const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS uploads_tenant ON uploads (tenant_id, owner_id);
     `,
   },
+  {
+    id: 19,
+    name: "evaluation-forensics",
+    sql: `
+      CREATE TABLE IF NOT EXISTS forensics_documents (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        pursuit_id TEXT,
+        kind TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        attestation_json TEXT NOT NULL,
+        protective_order INTEGER NOT NULL DEFAULT 0,
+        text TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE INDEX IF NOT EXISTS forensics_documents_tenant ON forensics_documents (tenant_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS protest_decisions (
+        id TEXT PRIMARY KEY,
+        tribunal TEXT NOT NULL,
+        docket TEXT NOT NULL,
+        decision_date TEXT NOT NULL,
+        agency TEXT NOT NULL,
+        citation TEXT NOT NULL,
+        url TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        text TEXT NOT NULL,
+        extracted_json TEXT NOT NULL,
+        extraction_version TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS protest_decisions_docket ON protest_decisions (tribunal, docket) WHERE docket <> '';
+
+      CREATE TABLE IF NOT EXISTS decision_grounds (
+        decision_id TEXT NOT NULL,
+        ground TEXT NOT NULL,
+        holding TEXT NOT NULL,
+        standard TEXT NOT NULL,
+        passage TEXT NOT NULL,
+        PRIMARY KEY (decision_id, ground)
+      );
+
+      CREATE TABLE IF NOT EXISTS twin_runs (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        pursuit_id TEXT,
+        proposal_version TEXT,
+        mode TEXT NOT NULL,
+        model_versions TEXT NOT NULL,
+        panel_outputs TEXT NOT NULL,
+        report TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE INDEX IF NOT EXISTS twin_runs_tenant ON twin_runs (tenant_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS twin_findings (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        factor TEXT NOT NULL,
+        class TEXT NOT NULL,
+        criterion_ref TEXT,
+        proposal_quote TEXT NOT NULL,
+        quote_verified INTEGER NOT NULL,
+        reasoning TEXT NOT NULL,
+        suggested_fix TEXT NOT NULL,
+        precedent_refs TEXT NOT NULL,
+        user_disposition TEXT
+      );
+      CREATE INDEX IF NOT EXISTS twin_findings_run ON twin_findings (run_id);
+
+      CREATE TABLE IF NOT EXISTS debrief_runs (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        pursuit_id TEXT,
+        debrief_document_id TEXT NOT NULL,
+        report TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE INDEX IF NOT EXISTS debrief_runs_tenant ON debrief_runs (tenant_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS debrief_findings (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        linked_criterion TEXT,
+        verification TEXT NOT NULL,
+        proposal_quote TEXT,
+        quote_verified INTEGER NOT NULL,
+        indicators TEXT NOT NULL,
+        ground_refs TEXT NOT NULL,
+        materiality TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS debrief_findings_run ON debrief_findings (run_id);
+
+      CREATE TABLE IF NOT EXISTS protest_clocks (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        pursuit_id TEXT NOT NULL,
+        notice_date TEXT NOT NULL,
+        computed_deadlines_json TEXT NOT NULL,
+        rule_sources_json TEXT NOT NULL,
+        acknowledged_by TEXT,
+        acknowledged_at TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE INDEX IF NOT EXISTS protest_clocks_tenant ON protest_clocks (tenant_id, pursuit_id);
+
+      CREATE TABLE IF NOT EXISTS forensics_calibration (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        run_id TEXT,
+        factor TEXT NOT NULL,
+        predicted TEXT NOT NULL,
+        actual TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE INDEX IF NOT EXISTS forensics_calibration_tenant ON forensics_calibration (tenant_id, factor);
+    `,
+  },
+  {
+    id: 20,
+    name: "twin-findings-per-run",
+    sql: `
+      CREATE TABLE twin_findings_v2 (
+        id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        factor TEXT NOT NULL,
+        class TEXT NOT NULL,
+        criterion_ref TEXT,
+        proposal_quote TEXT NOT NULL,
+        quote_verified INTEGER NOT NULL,
+        reasoning TEXT NOT NULL,
+        suggested_fix TEXT NOT NULL,
+        precedent_refs TEXT NOT NULL,
+        user_disposition TEXT,
+        PRIMARY KEY (run_id, id)
+      );
+      INSERT OR IGNORE INTO twin_findings_v2 (id, run_id, tenant_id, factor, class, criterion_ref, proposal_quote, quote_verified, reasoning, suggested_fix, precedent_refs, user_disposition)
+        SELECT id, run_id, tenant_id, factor, class, criterion_ref, proposal_quote, quote_verified, reasoning, suggested_fix, precedent_refs, user_disposition FROM twin_findings;
+      DROP TABLE twin_findings;
+      ALTER TABLE twin_findings_v2 RENAME TO twin_findings;
+      CREATE INDEX IF NOT EXISTS twin_findings_run ON twin_findings (run_id);
+      CREATE INDEX IF NOT EXISTS twin_findings_tenant_finding ON twin_findings (tenant_id, id);
+    `,
+  },
+  {
+    id: 21,
+    name: "cloud-computers-tenant",
+    sql: `
+      CREATE TABLE cloud_computers_v2 (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL DEFAULT 'default',
+        name TEXT NOT NULL,
+        provider TEXT NOT NULL DEFAULT 'ssh',
+        host TEXT NOT NULL,
+        user TEXT NOT NULL DEFAULT 'ubuntu',
+        workdir TEXT NOT NULL DEFAULT '/home/ubuntu/quillon',
+        status TEXT NOT NULL DEFAULT 'unknown' CHECK (status IN ('unknown', 'online', 'offline')),
+        last_checked_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      INSERT OR IGNORE INTO cloud_computers_v2 (id, name, provider, host, user, workdir, status, last_checked_at, created_at)
+        SELECT id, name, provider, host, user, workdir, status, last_checked_at, created_at FROM cloud_computers;
+      DROP TABLE cloud_computers;
+      ALTER TABLE cloud_computers_v2 RENAME TO cloud_computers;
+      CREATE UNIQUE INDEX IF NOT EXISTS cloud_computers_tenant_name ON cloud_computers (tenant_id, name);
+      CREATE INDEX IF NOT EXISTS cloud_computers_tenant ON cloud_computers (tenant_id, created_at);
+    `,
+  },
+  {
+    id: 22,
+    name: "tenant-partition-brand-jobs",
+    sql: `
+      ALTER TABLE brand_kits ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';
+      ALTER TABLE doc_templates ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';
+      ALTER TABLE jobs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';
+      CREATE INDEX IF NOT EXISTS brand_kits_tenant ON brand_kits (tenant_id, updated_at);
+      CREATE INDEX IF NOT EXISTS doc_templates_tenant ON doc_templates (tenant_id, created_at);
+      CREATE INDEX IF NOT EXISTS jobs_tenant ON jobs (tenant_id, created_at);
+    `,
+  },
 ];

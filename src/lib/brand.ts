@@ -7,6 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/lib/db";
+import { tenantScope } from "@/lib/tenant-context";
 import JSZip from "jszip";
 
 export type BrandKit = {
@@ -49,14 +50,18 @@ function rowToKit(r: Record<string, unknown>): BrandKit {
   };
 }
 
-export function listKits(): BrandKit[] {
-  return (getDb().prepare("SELECT * FROM brand_kits ORDER BY updated_at DESC").all() as Record<string, unknown>[]).map(
-    rowToKit,
-  );
+export function listKits(tenant?: string | null): BrandKit[] {
+  return (
+    getDb()
+      .prepare("SELECT * FROM brand_kits WHERE tenant_id = ? ORDER BY updated_at DESC")
+      .all(tenantScope(tenant)) as Record<string, unknown>[]
+  ).map(rowToKit);
 }
 
-export function getKit(id: string): BrandKit | null {
-  const r = getDb().prepare("SELECT * FROM brand_kits WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+export function getKit(id: string, tenant?: string | null): BrandKit | null {
+  const r = getDb()
+    .prepare("SELECT * FROM brand_kits WHERE id = ? AND tenant_id = ?")
+    .get(id, tenantScope(tenant)) as Record<string, unknown> | undefined;
   return r ? rowToKit(r) : null;
 }
 
@@ -67,15 +72,17 @@ export function upsertKit(input: {
   fonts?: BrandKit["fonts"];
   guidelines?: string;
   voice?: string;
+  tenant?: string | null;
 }): BrandKit {
   const db = getDb();
   const id = input.id ?? randomUUID();
-  const existing = getKit(id);
+  const tenant = tenantScope(input.tenant);
+  const existing = getKit(id, tenant);
   if (existing || input.id) {
     if (!existing) throw new Error("kit not found");
     db.prepare(
       `UPDATE brand_kits SET name = ?, colors = ?, fonts = ?, guidelines = ?, voice = ?,
-       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ? AND tenant_id = ?`,
     ).run(
       input.name,
       JSON.stringify({ ...existing.colors, ...input.colors }),
@@ -83,12 +90,14 @@ export function upsertKit(input: {
       input.guidelines ?? existing.guidelines,
       input.voice ?? existing.voice,
       id,
+      tenant,
     );
   } else {
     db.prepare(
-      `INSERT INTO brand_kits (id, name, colors, fonts, guidelines, voice) VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO brand_kits (id, tenant_id, name, colors, fonts, guidelines, voice) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
+      tenant,
       input.name,
       JSON.stringify(input.colors ?? {}),
       JSON.stringify(input.fonts ?? {}),
@@ -96,14 +105,24 @@ export function upsertKit(input: {
       input.voice ?? "",
     );
   }
-  return getKit(id)!;
+  return getKit(id, tenant)!;
 }
 
-export function deleteKit(id: string): boolean {
-  return getDb().prepare("DELETE FROM brand_kits WHERE id = ?").run(id).changes > 0;
+export function deleteKit(id: string, tenant?: string | null): boolean {
+  return getDb().prepare("DELETE FROM brand_kits WHERE id = ? AND tenant_id = ?").run(id, tenantScope(tenant)).changes > 0;
 }
 
-export function addAsset(kitId: string, name: string, kind: string, mime: string, base64: string): BrandAsset {
+export function addAsset(
+  kitId: string,
+  name: string,
+  kind: string,
+  mime: string,
+  base64: string,
+  tenant?: string | null,
+): BrandAsset {
+  // The asset inherits the kit's tenant; a kit outside the caller's tenant is
+  // not writable even with a valid kit id.
+  if (!getKit(kitId, tenant)) throw new Error("kit not found");
   const asset: BrandAsset = { id: randomUUID(), kitId, name, kind, mime, data: base64 };
   getDb()
     .prepare("INSERT INTO brand_assets (id, kit_id, name, kind, mime, data) VALUES (?, ?, ?, ?, ?, ?)")
@@ -111,11 +130,15 @@ export function addAsset(kitId: string, name: string, kind: string, mime: string
   return asset;
 }
 
-export function listAssets(kitId: string): Omit<BrandAsset, "data">[] {
+export function listAssets(kitId: string, tenant?: string | null): Omit<BrandAsset, "data">[] {
   return (
     getDb()
-      .prepare("SELECT id, kit_id, name, kind, mime FROM brand_assets WHERE kit_id = ? ORDER BY created_at")
-      .all(kitId) as Record<string, unknown>[]
+      .prepare(
+        `SELECT a.id, a.kit_id, a.name, a.kind, a.mime FROM brand_assets a
+         JOIN brand_kits k ON k.id = a.kit_id
+         WHERE a.kit_id = ? AND k.tenant_id = ? ORDER BY a.created_at`,
+      )
+      .all(kitId, tenantScope(tenant)) as Record<string, unknown>[]
   ).map((r) => ({
     id: String(r.id),
     kitId: String(r.kit_id),
@@ -125,8 +148,14 @@ export function listAssets(kitId: string): Omit<BrandAsset, "data">[] {
   }));
 }
 
-export function deleteAsset(id: string): boolean {
-  return getDb().prepare("DELETE FROM brand_assets WHERE id = ?").run(id).changes > 0;
+export function deleteAsset(id: string, tenant?: string | null): boolean {
+  return (
+    getDb()
+      .prepare(
+        `DELETE FROM brand_assets WHERE id = ? AND kit_id IN (SELECT id FROM brand_kits WHERE tenant_id = ?)`,
+      )
+      .run(id, tenantScope(tenant)).changes > 0
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -220,11 +249,14 @@ export function saveClonedTemplate(input: {
   name: string;
   kind: ClonedTemplate["kind"];
   definition: Record<string, unknown>;
+  tenant?: string | null;
 }): string {
   const id = randomUUID();
   getDb()
-    .prepare("INSERT INTO doc_templates (id, kit_id, name, kind, source, definition) VALUES (?, ?, ?, ?, 'cloned', ?)")
-    .run(id, input.kitId ?? null, input.name, input.kind, JSON.stringify(input.definition));
+    .prepare(
+      "INSERT INTO doc_templates (id, kit_id, tenant_id, name, kind, source, definition) VALUES (?, ?, ?, ?, ?, 'cloned', ?)",
+    )
+    .run(id, input.kitId ?? null, tenantScope(input.tenant), input.name, input.kind, JSON.stringify(input.definition));
   return id;
 }
 
@@ -238,9 +270,11 @@ export type DocTemplateRow = {
   createdAt: string;
 };
 
-export function listTemplates(): DocTemplateRow[] {
+export function listTemplates(tenant?: string | null): DocTemplateRow[] {
   return (
-    getDb().prepare("SELECT * FROM doc_templates ORDER BY created_at DESC").all() as Record<string, unknown>[]
+    getDb()
+      .prepare("SELECT * FROM doc_templates WHERE tenant_id = ? ORDER BY created_at DESC")
+      .all(tenantScope(tenant)) as Record<string, unknown>[]
   ).map((r) => ({
     id: String(r.id),
     kitId: (r.kit_id as string | null) ?? null,
@@ -252,6 +286,6 @@ export function listTemplates(): DocTemplateRow[] {
   }));
 }
 
-export function deleteTemplate(id: string): boolean {
-  return getDb().prepare("DELETE FROM doc_templates WHERE id = ?").run(id).changes > 0;
+export function deleteTemplate(id: string, tenant?: string | null): boolean {
+  return getDb().prepare("DELETE FROM doc_templates WHERE id = ? AND tenant_id = ?").run(id, tenantScope(tenant)).changes > 0;
 }

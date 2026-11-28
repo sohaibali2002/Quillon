@@ -14,10 +14,12 @@ import { z } from "zod";
 import { resolveModelAny } from "@/lib/models";
 import {
   catalogText,
-  unifiedToolset,
+  scopedToolset,
   type ToolCatalogEntry,
   type UnifiedToolset,
 } from "@/lib/tool-registry";
+import type { MemoryIdentity } from "@/lib/memory";
+import type { Role } from "@/lib/rbac";
 import { enqueueRun, getRun, registerRunKind, type DurableStepDef } from "@/lib/durable";
 import { getDb } from "@/lib/db";
 
@@ -220,10 +222,10 @@ export async function executePipeline(
 // Planning: the model turns a goal into a validated pipeline over the registry.
 export async function planPipeline(
   goal: string,
-  modelId?: string | null,
-  toolset?: UnifiedToolset,
+  modelId: string | null | undefined,
+  toolset: UnifiedToolset,
 ): Promise<{ plan: PipelinePlan; validation: PlanValidation; catalog: ToolCatalogEntry[] }> {
-  const unified = toolset ?? (await unifiedToolset("orchestrator"));
+  const unified = toolset;
   const { output } = await generateText({
     model: await resolveModelAny(modelId),
     output: Output.object({ schema: pipelinePlanSchema }),
@@ -275,29 +277,40 @@ export function orchestrationStepDefs(plan: PipelinePlan, tools: ToolSet): Durab
 export async function enqueueOrchestration(
   plan: PipelinePlan,
   tools: ToolSet,
-  opts: { goal?: string; org?: string } = {},
+  opts: { goal?: string; org?: string; identity?: MemoryIdentity; role?: Role } = {},
 ): Promise<{ runId: string; kind: string }> {
   const kind = orchestrationKindFor(plan);
   registerRunKind(kind, orchestrationStepDefs(plan, tools));
-  const runId = enqueueRun(kind, { goal: opts.goal ?? plan.summary, plan }, orchestrationStepDefs(plan, tools), {
-    maxAttempts: 2,
-    org: opts.org,
-  });
+  const runId = enqueueRun(
+    kind,
+    { goal: opts.goal ?? plan.summary, plan, identity: opts.identity ?? null, role: opts.role ?? null },
+    orchestrationStepDefs(plan, tools),
+    { maxAttempts: 2, org: opts.org },
+  );
   return { runId, kind };
 }
 
 // Rebuild the step registry for a persisted orchestration run in THIS process
 // (the worker route calls this before ticking) so replays after restart resume.
+// The run's original principal and role are stored with the plan, so a resume
+// rebuilds exactly the toolset the caller was allowed to use — never a wider one.
 export async function resumeOrchestrationRun(runId: string): Promise<boolean> {
-  const run = getRun(runId);
-  if (!run || !run.kind.startsWith(ORCHESTRATION_KIND_PREFIX)) return false;
-  const row = getDb().prepare("SELECT input FROM durable_runs WHERE id = ?").get(runId) as
-    | { input: string | undefined }
-    | undefined;
-  if (!row?.input) return false;
-  const { plan } = JSON.parse(row.input) as { plan: PipelinePlan };
-  const unified = await unifiedToolset("orchestrator");
-  registerRunKind(run.kind, orchestrationStepDefs(plan, unified.tools));
+  const row = getDb()
+    .prepare("SELECT kind, org, input FROM durable_runs WHERE id = ?")
+    .get(runId) as { kind: string; org: string; input: string | undefined } | undefined;
+  if (!row?.input || !row.kind.startsWith(ORCHESTRATION_KIND_PREFIX)) return false;
+  const parsed = JSON.parse(row.input) as {
+    plan: PipelinePlan;
+    identity?: MemoryIdentity | null;
+    role?: Role | null;
+  };
+  const identity: MemoryIdentity =
+    parsed.identity && typeof parsed.identity === "object"
+      ? parsed.identity
+      : { tenant: row.org?.trim() || "default", owner: "system" };
+  const role: Role = parsed.role === "admin" || parsed.role === "member" ? parsed.role : "member";
+  const scoped = await scopedToolset("orchestrator", identity, role);
+  registerRunKind(row.kind, orchestrationStepDefs(parsed.plan, scoped.tools));
   return true;
 }
 
@@ -316,7 +329,9 @@ function clip(value: unknown, max = 1500): unknown {
   return text.length > max ? `${text.slice(0, max)}…[truncated]` : value;
 }
 
-export function createOrchestrateTool(modelId?: string | null) {
+export type OrchestrationScope = { conversationId: string; identity: MemoryIdentity; role: Role };
+
+export function createOrchestrateTool(modelId?: string | null, scope?: OrchestrationScope) {
   return tool({
     description:
       "Compose and run a multi-step pipeline across ALL platform tools (Salesforce, HubSpot, " +
@@ -325,7 +340,10 @@ export function createOrchestrateTool(modelId?: string | null) {
     inputSchema: orchestrateInputSchema,
     execute: async ({ goal }) => {
       try {
-        const unified = await unifiedToolset("orchestrator");
+        // Fail closed: without the caller's scope the pipeline would run against
+        // the default tenant with every tool class, so it refuses instead.
+        if (!scope) return { ok: false, error: "Orchestration needs a caller scope." };
+        const unified = await scopedToolset(scope.conversationId, scope.identity, scope.role);
         const { plan, validation, catalog } = await planPipeline(goal, modelId, unified);
         if (!validation.ok) {
           return { ok: false, planned: plan, problems: validation.problems };

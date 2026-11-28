@@ -11,7 +11,9 @@ import { ENTERPRISE_RECIPES } from "@/lib/enterprise-platforms";
 import { guard } from "@/lib/guard";
 // GET /api/connectors — catalog with per-connector connection state.
 // Secrets are never returned; only the last four characters for recognition.
-export async function GET() {
+export async function GET(req: Request) {
+  const gate = await guard(req, { role: "member" });
+  if (gate instanceof Response) return gate;
   const connected = new Set(connectedIds());
   const catalog = CONNECTOR_CATALOG.map((c) => {
     const token = readToken(c.id);

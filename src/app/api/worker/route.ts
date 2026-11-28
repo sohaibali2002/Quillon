@@ -31,6 +31,6 @@ export async function POST(req: Request) {
     audit(req, gate, "run.replay", parsed.data.id, { ok });
     return Response.json({ ok });
   }
-  const id = await tick();
+  const id = await tick(undefined, { tenant: principalForSession(gate).tenant });
   return Response.json({ ran: id });
 }

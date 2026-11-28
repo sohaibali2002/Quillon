@@ -121,7 +121,11 @@ export async function POST(req: Request) {
     enforceToolAuthority(
       {
         ...unified.tools,
-        orchestrate: createOrchestrateTool(body.model),
+        orchestrate: createOrchestrateTool(body.model, {
+          conversationId: body.conversationId?.trim() || "agent",
+          identity: principal,
+          role,
+        }),
       },
       role,
     ),

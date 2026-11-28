@@ -19,6 +19,7 @@ import { NS_TOOLS } from "@/lib/netsuite";
 import { CP_TOOLS } from "@/lib/costpoint";
 import { OR_TOOLS } from "@/lib/openrouter";
 import { ENTERPRISE_RECIPES } from "@/lib/enterprise-platforms";
+import { FW_TOOL_CLASSES } from "@/lib/forensics/classes";
 
 // Classes that the name rules below cannot infer.
 const OVERRIDES = {
@@ -65,6 +66,7 @@ const groups = {
   enterprise: ENTERPRISE_RECIPES.flatMap((r) =>
     r.actions.map((a) => [`ent_${r.id}_${a.id}`, classForMethod(a.method)]),
   ),
+  forensics: Object.entries(FW_TOOL_CLASSES),
 };
 
 // Governance surface: identity, tenancy, billing and credential management stay

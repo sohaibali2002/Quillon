@@ -5,6 +5,11 @@ import { register } from "node:module";
 register("./ts-resolve.mjs", import.meta.url);
 import assert from "node:assert/strict";
 
+// The mock org listens on loopback; app flow only because the operator
+// (this check) names the destination in both egress settings.
+process.env.QUILLON_EGRESS_ALLOWLIST = "127.0.0.1";
+process.env.QUILLON_EGRESS_PRIVATE_HOSTS = "127.0.0.1";
+
 const { SfClient, parseCredential, extractSfError, csvRows } = await import("../src/lib/salesforce.ts");
 
 const state = { refreshes: 0 };

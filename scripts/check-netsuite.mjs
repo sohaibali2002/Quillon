@@ -10,6 +10,10 @@ import { createHmac } from "node:crypto";
 const { NetSuiteClient, extractNsError, realmOf, parseNetSuiteCredential, pct } = await import("../src/lib/netsuite.ts");
 
 const ACCOUNT_ID = "123456-sb1";
+// The mock SuiteTalk listens on loopback while the client still signs the real
+// hostname, so both destinations are approved here — this check only.
+process.env.QUILLON_EGRESS_ALLOWLIST = `127.0.0.1,${ACCOUNT_ID}.suitetalk.api.netsuite.com`;
+process.env.QUILLON_EGRESS_PRIVATE_HOSTS = `127.0.0.1,${ACCOUNT_ID}.suitetalk.api.netsuite.com`;
 const CONSUMER_SECRET = "consumer-secret";
 const TOKEN_SECRET = "token-secret";
 

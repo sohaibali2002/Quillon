@@ -207,27 +207,54 @@ export async function assertPublicDestination(
   // address validation. An allowlisted name that resolves to loopback, a
   // private range or a cloud-metadata endpoint is still refused unless the
   // operator approved that exact internal destination in
-  // QUILLON_EGRESS_PRIVATE_HOSTS (and allowlisted it too).
+  // QUILLON_EGRESS_PRIVATE_HOSTS (and allowlisted it too). Cloud-metadata
+  // endpoints stay blocked even when approved.
   if (!policy.allowPrivate) {
-    if (METADATA_HOSTS.has(hostname) || LOOPBACK_NAMES.has(hostname)) {
-      throw new Error(`Destination ${hostname} is a local or cloud-metadata host and is blocked.`);
-    }
-    const literal = isIP(hostname);
-    if (literal) {
-      const reason = addressBlockReason(hostname);
-      if (reason) throw new Error(`Destination ${hostname} is blocked (${reason}).`);
-    } else {
-      const answers = await resolveAll(hostname, policy.resolver);
-      const privateApproved = allowed && privateDestinationApproved(hostname);
-      for (const answer of answers) {
-        const reason = addressBlockReason(answer.address);
-        if (reason && !privateApproved) {
+    const blockMetadata = (via: string) => {
+      throw new Error(`Destination ${hostname}${via} is a cloud-metadata endpoint and is always blocked.`);
+    };
+    const approved = allowed && privateDestinationApproved(hostname);
+    const literal = isIP(hostname) !== 0;
+
+    // Metadata is never reachable, approved or not.
+    if (literal && METADATA_IPS.has(hostname)) blockMetadata("");
+    if (!approved) {
+      if (METADATA_HOSTS.has(hostname)) blockMetadata("");
+      if (LOOPBACK_NAMES.has(hostname)) {
+        throw new Error(`Destination ${hostname} is a local or cloud-metadata host and is blocked.`);
+      }
+      if (literal) {
+        const reason = addressBlockReason(hostname);
+        if (reason) {
           throw new Error(
-            allowed && !privateDestinationApproved(hostname)
-              ? `Destination ${hostname} is allowlisted but resolves to a blocked address (${reason}); add it to QUILLON_EGRESS_PRIVATE_HOSTS to reach an internal service.`
-              : `Destination ${hostname} resolves to a blocked address (${reason}).`,
+            `Destination ${hostname} is blocked (${reason}); add it to QUILLON_EGRESS_ALLOWLIST and QUILLON_EGRESS_PRIVATE_HOSTS to reach an internal service.`,
           );
         }
+      } else {
+        const answers = await resolveAll(hostname, policy.resolver);
+        for (const answer of answers) {
+          const reason = addressBlockReason(answer.address);
+          if (reason) {
+            throw new Error(
+              allowed
+                ? `Destination ${hostname} is allowlisted but resolves to a blocked address (${reason}); add it to QUILLON_EGRESS_PRIVATE_HOSTS to reach an internal service.`
+                : `Destination ${hostname} resolves to a blocked address (${reason}).`,
+            );
+          }
+        }
+      }
+    } else if (!literal) {
+      // Approved: private ranges are trusted, but a name that resolves to a
+      // cloud-metadata address is still refused. A name that does not resolve
+      // from this host is allowed — the operator vouched for it.
+      let answers: LookupResult[] | null = null;
+      try {
+        answers = await resolveAll(hostname, policy.resolver);
+      } catch {
+        answers = null;
+      }
+      for (const answer of answers ?? []) {
+        if (METADATA_IPS.has(answer.address)) blockMetadata(" resolves to");
       }
     }
   }

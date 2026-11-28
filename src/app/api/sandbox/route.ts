@@ -1,5 +1,7 @@
 async function secure(req: Request) {
-  const gate = await guard(req);
+  // Code execution is a member capability: a read-only account must not run
+  // arbitrary code, and the route enforces what the `runCode` tool class says.
+  const gate = await guard(req, { role: "member" });
   if (gate instanceof Response) return gate;
   return gate;
 }

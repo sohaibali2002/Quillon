@@ -15,6 +15,7 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readToken } from "./connectors";
+import { guardedFetch } from "./net-guard";
 import { runWithTenant, tenantScope } from "./tenant-context";
 import { safeErrorMessage } from "./sanitize";
 
@@ -42,6 +43,20 @@ export function parseCostpointCredential(stored: string): CostpointCred | null {
 
 export function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
+}
+
+// The base URL is operator-supplied, so it is checked as a URL before any
+// request is built from it: a scheme other than http(s) or a non-URL string is
+// refused, and every call still goes through guardedFetch (private ranges,
+// redirect hops).
+export function baseUrlReason(url: string): string | null {
+  try {
+    const parsed = new URL(normalizeBaseUrl(url));
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "Connector base URL must be http(s).";
+    return null;
+  } catch {
+    return "Connector base URL is not a valid URL.";
+  }
 }
 
 export function serviceRootOf(baseUrl: string): string {
@@ -97,7 +112,9 @@ export class CostpointClient {
   async accessToken(force = false): Promise<string | null> {
     if (this.cred.apiKey) return null; // API-key mode signs with a header instead
     if (!force && this.token && Date.now() < this.token.expiresAt) return this.token.token;
-    const res = await fetch(`${this.baseUrl}/api/oauth2/token`, {
+    const invalid = baseUrlReason(this.baseUrl);
+    if (invalid) throw new Error(invalid);
+    const res = await guardedFetch(`${this.baseUrl}/api/oauth2/token`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
       body: new URLSearchParams({
@@ -139,6 +156,8 @@ export class CostpointClient {
       retry?: number;
     },
   ): Promise<{ status: number; ok: boolean; data: unknown; etag?: string | null }> {
+    const invalid = baseUrlReason(this.baseUrl);
+    if (invalid) throw new Error(invalid);
     const token = await this.accessToken().catch(() => null);
     const url = new URL(`${this.root}/${servicePath.replace(/^\/+/, "")}`);
     for (const [k, v] of Object.entries(init?.query ?? {})) if (v !== undefined) url.searchParams.set(k, String(v));
@@ -148,7 +167,7 @@ export class CostpointClient {
       ...(init?.accept ? { accept: init.accept } : {}),
       ...init?.headers,
     });
-    const res = await fetch(url, {
+    const res = await guardedFetch(url, {
       method,
       headers,
       body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,

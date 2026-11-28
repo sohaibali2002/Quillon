@@ -6,26 +6,29 @@ async function secure(req: Request) {
 
 import { NextResponse } from "next/server";
 import { builtinTemplates, generateFromTemplate } from "@/lib/studio";
-import { listTemplates, deleteTemplate } from "@/lib/brand";
-
+import { deleteTemplate, listTemplates } from "@/lib/brand";
 import { guard } from "@/lib/guard";
+import { principalForSession } from "@/lib/rbac";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
-export async function GET() {
+export async function GET(req: Request) {
+  const gate = await guard(req);
+  if (gate instanceof Response) return gate;
+  const { tenant } = principalForSession(gate);
   return NextResponse.json({
     builtin: builtinTemplates.map(({ id, name, kind, category, description, fields }) => ({
       id, name, kind, category, description, fields,
     })),
-    cloned: listTemplates(),
+    cloned: listTemplates(tenant),
   });
 }
 
 export async function POST(request: Request) {
-  const denied = await secure(request);
-  if (denied instanceof Response) return denied;
+  const gate = await guard(request, { role: "member" });
+  if (gate instanceof Response) return gate;
 
-  const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+  const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
   if (!body || typeof body.templateId !== "string") {
     return NextResponse.json({ error: "templateId is required" }, { status: 400 });
   }

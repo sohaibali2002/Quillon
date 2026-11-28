@@ -146,7 +146,9 @@
   gap: 12px;
   padding: 18px 20px 14px;
   border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
 }
+.lx-drawer-head > * { min-width: 0; }
 .lx-drawer-head h2 { font-size: 1.05rem; color: var(--heading); }
 .lx-drawer-head p { font-size: 0.85rem; color: var(--muted); margin-top: 2px; }
 .lx-drawer-body { flex: 1; overflow-y: auto; padding: 18px 20px 28px; min-width: 0; }
@@ -550,14 +552,19 @@
   .lx-rail .lx-home { display: none; }
   .lx-main { margin-left: 0; min-height: calc(100dvh - 57px); }
   /* Phone: the drawer is modal, so the page behind the scrim is neither seen
-     nor reachable until it closes. */
-  .lx[data-drawer="open"] .lx-main { visibility: hidden; }
+     nor reachable until it closes. The top bar sits outside .lx-main, so it
+     needs the same treatment or its wordmark shows through the drawer. */
+  .lx[data-drawer="open"] .lx-main,
+  .lx[data-drawer="open"] .lx-top { visibility: hidden; }
   .lx-scrim { z-index: 50; }
   .lg-home { padding: 40px 16px 48px; }
   .lg-starters { grid-template-columns: minmax(0, 1fr); }
   .lg-thread { padding: 22px 16px 0; }
   .lg-select { max-width: 150px; }
   .lx-drawer-head, .lx-drawer-body { padding-left: 16px; padding-right: 16px; }
+  /* The panel repeats its own description at the top of the body, so the
+     subtitle in the sheet header is redundant on a phone and only crowds it. */
+  .lx-drawer-head p { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

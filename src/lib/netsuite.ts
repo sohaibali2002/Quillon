@@ -15,10 +15,12 @@ import { createHmac, randomUUID } from "node:crypto";
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readToken } from "./connectors";
+import { guardedFetch } from "./net-guard";
 import { runWithTenant, tenantScope } from "./tenant-context";
 import { safeErrorMessage } from "./sanitize";
 
 const HOST_SUFFIX = ".suitetalk.api.netsuite.com";
+const ACCOUNT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 export interface NetSuiteCred {
   accountId: string;
@@ -42,6 +44,10 @@ export function parseNetSuiteCredential(stored: string): NetSuiteCred | null {
   const parts = stored.split("|");
   if (parts.length !== 5 || parts.some((p) => !p)) return null;
   const [accountId, consumerKey, consumerSecret, tokenId, tokenSecret] = parts;
+  // The account ID becomes the hostname's first label, so it may only contain
+  // label characters: a value with "/" or ".." would move the request to a host
+  // of the attacker's choosing.
+  if (!ACCOUNT_ID.test(accountId)) return null;
   return { accountId, consumerKey, consumerSecret, tokenId, tokenSecret };
 }
 
@@ -53,6 +59,11 @@ export class NetSuiteClient {
   }
 
   get host(): string {
+    // Defence in depth: a client built from a hand-made credential still cannot
+    // point requests at another host.
+    if (!ACCOUNT_ID.test(this.cred.accountId)) {
+      throw new Error("NetSuite account ID is invalid; reconnect the connector.");
+    }
     return `${this.cred.accountId}${HOST_SUFFIX}`;
   }
 
@@ -111,7 +122,7 @@ export class NetSuiteClient {
       authorization: this.authorizationHeader(method, url.toString(), timestamp, nonce),
     };
     if (init?.body !== undefined) headers["content-type"] = "application/json";
-    const res = await fetch(url, {
+    const res = await guardedFetch(url, {
       method,
       headers,
       body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,

@@ -356,6 +356,46 @@ await check("an allowlisted host that resolves privately is still refused", asyn
   delete process.env.QUILLON_EGRESS_PRIVATE_HOSTS;
 });
 
+await check("operator approval of an internal destination is explicit and never covers cloud metadata", async () => {
+  delete process.env.QUILLON_EGRESS_ALLOWLIST;
+  delete process.env.QUILLON_EGRESS_PRIVATE_HOSTS;
+  try {
+    // Default posture: loopback by IP or by name is refused.
+    await assert.rejects(() => net.assertPublicDestination("http://127.0.0.1:8080/api"), /blocked \(loopback/);
+    await assert.rejects(() => net.assertPublicDestination("http://localhost:8080/api"), /local or cloud-metadata/);
+
+    // Allowlisting alone is not permission to reach a private address.
+    process.env.QUILLON_EGRESS_ALLOWLIST = "127.0.0.1,localhost";
+    await assert.rejects(() => net.assertPublicDestination("http://127.0.0.1:8080/api"), /blocked \(loopback/);
+    await assert.rejects(() => net.assertPublicDestination("http://localhost:8080/api"), /local or cloud-metadata/);
+
+    // Naming it in both settings is: an on-prem ERP or a local MCP server.
+    process.env.QUILLON_EGRESS_PRIVATE_HOSTS = "127.0.0.1,localhost";
+    await assert.doesNotReject(() => net.assertPublicDestination("http://127.0.0.1:8080/api"));
+    await assert.doesNotReject(() => net.assertPublicDestination("http://localhost:8080/api"));
+
+    // Cloud metadata stays blocked even when an operator lists it.
+    process.env.QUILLON_EGRESS_ALLOWLIST = "127.0.0.1,localhost,169.254.169.254,approved.corp.test";
+    process.env.QUILLON_EGRESS_PRIVATE_HOSTS = "127.0.0.1,localhost,169.254.169.254,approved.corp.test";
+    await assert.rejects(
+      () => net.assertPublicDestination("http://169.254.169.254/latest/meta-data/"),
+      /cloud-metadata endpoint/,
+    );
+    // A name that resolves to a metadata address is refused the same way.
+    await assert.rejects(
+      () =>
+        net.assertPublicDestination("https://approved.corp.test/api", {
+          allowlist: ["approved.corp.test"],
+          resolver: async () => [{ address: "169.254.169.254", family: 4 }],
+        }),
+      /cloud-metadata endpoint/,
+    );
+  } finally {
+    delete process.env.QUILLON_EGRESS_ALLOWLIST;
+    delete process.env.QUILLON_EGRESS_PRIVATE_HOSTS;
+  }
+});
+
 await check("signed audit checkpoints detect a rewritten audit log", async () => {
   const db = dbModule.getDb();
   db.prepare("INSERT INTO audit_log (org, actor, action, resource, detail, hash) VALUES ('default','t','a','r','{}','h1')").run();
@@ -752,6 +792,127 @@ await check("next.config applies the header policy to every route", async () => 
     "the catch-all rule does not set the CSP",
   );
   assert.equal(cfg.poweredByHeader, false, "the framework banner must not be advertised");
+});
+
+// ---------- fixed attack regressions ----------
+// The suite already points DATABASE_PATH at a throwaway file above, so these
+// run against that database and never the developer's .data/quillon.db.
+const cryptoModule = await import("node:crypto");
+const cloud = await import("../src/lib/cloud-computers.ts");
+const guardModule = await import("../src/lib/guard.ts");
+const orchestrator = await import("../src/lib/orchestrator.ts");
+const registry = await import("../src/lib/tool-registry.ts");
+const netsuite = await import("../src/lib/netsuite.ts");
+const costpoint = await import("../src/lib/costpoint.ts");
+const brand = await import("../src/lib/brand.ts");
+const jobs = await import("../src/lib/jobs.ts");
+dbModule.getDb();
+
+await check("ssh refuses option-shaped host and user (argument injection)", () => {
+  // The exploit: user "-oProxyCommand=..." reaches ssh as an option and runs a
+  // shell command. Validation must reject it before any process is spawned.
+  assert.ok(cloud.sshTargetReason("-oProxyCommand=touch${IFS}/tmp/pwn", "ubuntu"));
+  assert.ok(cloud.sshTargetReason("box", "-oProxyCommand=id"));
+  assert.ok(cloud.sshTargetReason("--help", "ubuntu"));
+  assert.ok(cloud.sshTargetReason("box;rm -rf /", "ubuntu"));
+  assert.ok(cloud.sshTargetReason("box`id`", "ubuntu"));
+  assert.equal(cloud.sshTargetReason("10.0.0.5", "ubuntu"), null);
+  assert.equal(cloud.sshTargetReason("gpu-1.internal.example.com", "root"), null);
+  assert.throws(() => cloud.addComputer({ name: "evil", host: "-oProxyCommand=id" }), /may not start|Host|User/);
+});
+
+await check("cloud computers are listed per tenant, never globally", () => {
+  cloud.addComputer({ name: "acme-box", host: "10.1.1.1", tenant: "acme" });
+  cloud.addComputer({ name: "other-box", host: "10.2.2.2", tenant: "other" });
+  assert.deepEqual(cloud.listComputers("acme").map((c) => c.name), ["acme-box"]);
+  assert.deepEqual(cloud.listComputers("other").map((c) => c.name), ["other-box"]);
+  assert.equal(cloud.listComputers("third").length, 0);
+});
+
+await check("cloud computer delete is tenant-scoped", () => {
+  const box = cloud.addComputer({ name: "delete-me", host: "10.3.3.3", tenant: "acme" });
+  assert.equal(cloud.deleteComputer(box.id, "other"), false, "another tenant deleted the row");
+  assert.equal(cloud.listComputers("acme").some((c) => c.id === box.id), true);
+  assert.equal(cloud.deleteComputer(box.id, "acme"), true);
+});
+
+await check("orchestration toolsets are filtered by role (no admin tools for a member)", async () => {
+  const member = await registry.scopedToolset("test", { tenant: "acme", owner: "u1" }, "member");
+  const admin = await registry.scopedToolset("test", { tenant: "acme", owner: "u1" }, "admin");
+  assert.equal("runCode" in member.tools, false, "member can reach runCode through orchestration");
+  assert.equal("or_keys_create" in member.tools, false, "member can reach key management");
+  assert.equal(member.catalog.some((c) => c.name === "runCode"), false, "planner still sees runCode");
+  assert.ok("runCode" in admin.tools, "admin must keep runCode");
+  assert.ok(member.catalog.every((c) => c.name in member.tools), "catalog advertises a tool the role cannot call");
+});
+
+await check("orchestration plans cannot validate a tool the caller may not call", async () => {
+  const member = await registry.scopedToolset("test", { tenant: "acme", owner: "u1" }, "member");
+  const plan = {
+    summary: "escalate",
+    steps: [{ id: "s1", tool: "runCode", args: { language: "python", code: "print(1)" }, dependsOn: [] }],
+  };
+  assert.equal(orchestrator.validatePlan(plan, member.catalog).ok, false, "a member plan reached an admin tool");
+});
+
+await check("NetSuite account id cannot move the request to another host", () => {
+  assert.equal(netsuite.parseNetSuiteCredential("acct/evil|x|y|z|w"), null);
+  assert.equal(netsuite.parseNetSuiteCredential("../169.254.169.254|x|y|z|w"), null);
+  assert.equal(netsuite.parseNetSuiteCredential("123456-sb1|x|y|z|w")?.accountId, "123456-sb1");
+});
+
+await check("Costpoint base URL must be an http(s) URL", () => {
+  assert.ok(costpoint.baseUrlReason("file:///etc/passwd"));
+  assert.ok(costpoint.baseUrlReason("not a url"));
+  assert.equal(costpoint.baseUrlReason("https://acme.costpoint.com"), null);
+});
+
+await check("brand kits and jobs are partitioned by tenant", () => {
+  const kit = brand.upsertKit({ name: "acme-brand", tenant: "acme" });
+  assert.equal(brand.listKits("other").length, 0, "another tenant can list the kit");
+  assert.equal(brand.getKit(kit.id, "other"), null);
+  assert.equal(brand.deleteKit(kit.id, "other"), false);
+  jobs.createJob({ name: "acme-job", prompt: "do work", tenant: "acme" });
+  assert.equal(jobs.listJobs("other").length, 0, "another tenant can list the job");
+});
+
+await check("audit chain is keyed and rejects an edited or downgraded row", () => {
+  // The suite already set a signing key at the top; these rows are keyed by it.
+  const db = dbModule.getDb();
+  const req = new Request("http://localhost/api/test", { method: "POST" });
+  const session = { sub: "u1", email: "u1@acme.example", roles: ["admin"], iat: 0, exp: 0, name: "u" };
+  guardModule.audit(req, session, "regression.keyed", "thing", { n: 1 });
+  assert.equal(guardModule.verifyAuditChain(200).ok, true, "freshly written keyed rows do not verify");
+
+  db.prepare("UPDATE audit_log SET detail = ? WHERE action = 'regression.keyed'").run('{"n":2}');
+  assert.equal(guardModule.verifyAuditChain(200).ok, false, "an edited audit row still verifies");
+
+  // Downgrade: append a correctly chained but unkeyed row after keyed ones.
+  const last = db.prepare("SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1").get();
+  const at = new Date(Date.now() + 1000).toISOString();
+  const payload = JSON.stringify([last.hash, "acme", "u1", "regression.downgrade", "thing", "{}", null, at]);
+  const plain = cryptoModule.createHash("sha256").update(payload).digest("hex");
+  db.prepare(
+    "INSERT INTO audit_log (org, actor, action, resource, detail, ip, at, prev_hash, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run("acme", "u1", "regression.downgrade", "thing", "{}", null, at, last.hash, plain);
+  assert.equal(guardModule.verifyAuditChain(200).ok, false, "an unkeyed row appended to a keyed chain still verifies");
+});
+
+await check("code execution and machine routes require a member, and reads require a session", () => {
+  const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
+  assert.match(read("src/app/api/sandbox/route.ts"), /guard\(req, \{ role: "member" \}\)/);
+  assert.match(read("src/app/api/computers/route.ts"), /guard\(req, \{ role: "member" \}\)/);
+  for (const route of [
+    "src/app/api/brand/route.ts",
+    "src/app/api/computers/route.ts",
+    "src/app/api/connectors/route.ts",
+    "src/app/api/packages/route.ts",
+    "src/app/api/studio/route.ts",
+    "src/app/api/setup/route.ts",
+    "src/app/api/jobs/route.ts",
+  ]) {
+    assert.match(read(route), /await guard\(/, `${route} has an unguarded handler`);
+  }
 });
 
 console.log(`\n${passed} passed${failures.length ? `, ${failures.length} FAILED` : ""}`);

@@ -13,6 +13,7 @@
     "check:costpoint": "node --no-warnings scripts/check-costpoint.mjs && node scripts/check-costpoint-contract.mjs",
     "check:openrouter": "node --no-warnings --loader ./scripts/ts-resolve.mjs scripts/check-openrouter.mjs && node --no-warnings scripts/check-openrouter-contract.mjs",
     "check:orchestration": "node --no-warnings --loader ./scripts/ts-resolve.mjs scripts/check-orchestration.mjs",
+    "check:forensics": "node --no-warnings --loader ./scripts/ts-resolve.mjs scripts/check-forensics.mjs",
     "check:security": "node --no-warnings --loader ./scripts/ts-resolve.mjs scripts/check-security.mjs",
     "check:audit": "node scripts/check-audit.mjs"
   },

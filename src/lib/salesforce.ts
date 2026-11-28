@@ -9,6 +9,7 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readToken } from "./connectors";
+import { guardedFetch } from "./net-guard";
 import { runWithTenant, tenantScope } from "./tenant-context";
 import { safeErrorMessage } from "./sanitize";
 
@@ -86,7 +87,7 @@ export class SfClient {
   async accessToken(): Promise<string> {
     if (this.cred.kind === "session") return this.cred.accessToken;
     if (this.cachedToken) return this.cachedToken;
-    const res = await fetch(`${this.cred.loginUrl}/services/oauth2/token`, {
+    const res = await guardedFetch(`${this.cred.loginUrl}/services/oauth2/token`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -132,7 +133,7 @@ export class SfClient {
         headers["content-type"] = init.contentType ?? "application/json";
         body = typeof init.body === "string" ? init.body : JSON.stringify(init.body);
       }
-      const res = await fetch(this.api(path), { method, headers, body, signal: AbortSignal.timeout(30_000) });
+      const res = await guardedFetch(this.api(path), { method, headers, body, signal: AbortSignal.timeout(30_000) });
       if (res.status === 401 && attempt === 0 && this.cred.kind === "refresh") {
         this.cachedToken = null;
         continue;

@@ -157,7 +157,7 @@ export async function POST(req: Request) {
       ...unified.tools,
       // Cross-platform pipelines: the model can delegate a whole multi-tool
       // job (fetch → enrich → document) to the orchestrator in one call.
-      orchestrate: createOrchestrateTool(model),
+      orchestrate: createOrchestrateTool(model, { conversationId, identity: principal, role }),
     },
     role,
   );

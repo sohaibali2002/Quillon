@@ -1,5 +1,76 @@
 # Changelog
 
+## 2026-11-28 (Evaluation Forensics: Evaluator Twin, Debrief Forensics, protest clock, corpus)
+
+- New module `src/lib/forensics/*` and workspace panel **Forensics**, wired
+  into chat and agents as 14 `fw_*` tools in the unified registry (manifest
+  regenerated: 378 tools; `fw_ingest_decision` admin, runs and exports write,
+  the rest read).
+  - `quote-check.ts` — deterministic quote verification with an offset map
+    (NFKC, quote/dash folding, whitespace collapse), page/line lookup,
+    cross-reference resolution, numeric agreement and concealed-content
+    detection (white text, zero-size fonts, HTML comments, zero-width and
+    bidi controls, AI-directed instruction text).
+  - `debrief.ts` — atomize → trace to a stated criterion → verify
+    (supported / contradicted / absent / ambiguous) → consistency (rating vs
+    reasoning, cross-factor contradictions, figures absent from the proposal)
+    → disparate-treatment screening only with lawfully held awardee excerpts
+    → process-integrity indicators for counsel → grounds and precedent →
+    materiality-ordered issue list. Quotes attributed to the proposal that do
+    not exist in it are never shown as proposal text and are listed as
+    indicators.
+  - `twin.ts` — independent per-factor panel with a verifiable quote gate that
+    discards findings citing nonexistent proposal text; deterministic rubric
+    fallback when no provider is configured (the report says which mode ran);
+    ratings only from the RFP's own scheme, blank otherwise; precedent links;
+    per-factor calibration with mandatory sample sizes.
+  - `corpus.ts` — versioned deterministic extraction (docket, date, agency,
+    tribunal, outcome, scheme, factors, grounds with holding/standard/passage,
+    remedy), hybrid BM25 + metadata retrieval that only returns hits with a
+    citation and link, ground statistics as counts; ingestion restricted to
+    `gao.gov`, `www.gao.gov`, `uscfc.uscourts.gov`, `www.uscfc.uscourts.gov`
+    over https through the SSRF guard.
+  - `clock.ts` — FAR 15.505(a)(1), 4 C.F.R. § 21.2(a)(1)-(3) and
+    31 U.S.C. § 3553(d)(4)(B) windows, US Federal holiday calendar, next
+    business-day adjustment, rule text and source per date, and
+    `not_applicable` instead of a guessed date when an anchor is missing.
+  - `attestation.ts` — Procurement Integrity Act gate: competitor proposals and
+    source selection information refused outright; protective-order material
+    needs the order reference and explicit authority and never enters the
+    shared corpus; attestations bind to a SHA-256 of the text.
+  - `store.ts` + migration 19 — tenant-scoped documents, twin and debrief runs,
+    findings, clocks and calibration; cross-tenant reads fail as not-found.
+    Public corpus tables hold published decisions only.
+  - `actions.ts` — `forensics.counsel_export` and
+    `forensics.debrief_request_draft` are transaction-engine actions:
+    simulated, human-approved, written as local files, verifiable and
+    undoable. Nothing contacts an agency or files anything.
+- `src/app/api/forensics/route.ts` — one authenticated, rate-limited,
+  audited tenant-scoped endpoint; client input validated with zod; outcome
+  probability language refused before a report is stored.
+- `src/app/components/forensics-panel.tsx` — document vault with the
+  attestation form, twin report, side-by-side verification table, issue list,
+  clock with rule sources, corpus search and admin ingest, calibration.
+- `scripts/check-forensics.mjs` (`npm run check:forensics`, in CI) — 47
+  checks, one per attack or contract: fabricated quotes, competitor and sealed
+  documents, guessed deadlines, hidden-text lint, tenant isolation, ratings
+  from an invented scheme, corpus hits without citations, and a repeated twin
+  run over the same documents (see below).
+- Fixed: a second Evaluator Twin run over the same documents returned 500.
+  Finding ids are deterministic per run (`TF-1`, `TF-2`, …), and
+  `twin_findings.id` was the primary key, so the second run died on
+  `UNIQUE constraint failed: twin_findings.id` after the run row had already
+  been written. Migration 20 rebuilds the table with `PRIMARY KEY (run_id, id)`
+  (existing dispositions preserved), `saveTwinRun` now writes the run and its
+  findings in one transaction, and `setFindingDisposition` takes an optional
+  `runId` and otherwise targets the newest run holding that finding. The
+  regression check saves the same report twice and asserts each run keeps its
+  findings and its own disposition.
+- Fixed: the tools rail only mounted on desktop, so on a phone the "Open tools"
+  button set state nothing rendered and no panel — Forensics included — could
+  be opened from the UI (`src/app/workspace/shell.tsx`). The rail now mounts
+  while the phone sheet is open; the off-canvas CSS already handled the rest.
+
 ## 2026-11-28 (response hardening, honest resource caps)
 
 - Every response now carries a strict security header policy, defined once in

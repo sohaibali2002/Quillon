@@ -27,6 +27,13 @@ write in a plain app, with an inspectable surface for every capability.
   watchlists), auto-RFP (shredding, compliance matrix, drafted responses),
   FP&A (variance narratives, rolling forecasts), investment research (sourced
   memos, comps, market maps), legal, field operations.
+- **Evaluation Forensics** — an Evaluator Twin that simulates a source
+  selection board pre-submission, Debrief Forensics that verifies each
+  recorded evaluation finding against your own proposal text, a protest clock
+  with rule sources, and a protest-decision corpus that grounds both. Every
+  cited proposal quote is checked verbatim; fabricated quotes are discarded and
+  logged, and documents need a Procurement Integrity Act attestation before
+  they are stored.
 - **Local LLMs** — native `ollama/*` and `local/*` model ids via the
   OpenAI-compatible protocol: Ollama, LM Studio, vLLM, llama.cpp.
 - **Enterprise** — Entra ID / any-OIDC SSO, 41 connectors with AES-256-GCM

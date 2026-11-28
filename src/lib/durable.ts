@@ -96,22 +96,30 @@ export function listRuns(limit = 50, org?: string): DurableRun[] {
 
 // Claim the next runnable run with a lease so several workers can share the
 // queue without double-executing. Expired leases (crashed workers) are fair game.
-function claimNext(workerId: string): { id: string; input: unknown; checkpoint: unknown; max_attempts: number; attempts: number } | null {
+function claimNext(
+  workerId: string,
+  tenant?: string | null,
+): { id: string; input: unknown; checkpoint: unknown; max_attempts: number; attempts: number } | null {
   const db = getDb();
   const now = new Date().toISOString();
   const lease = new Date(Date.now() + LEASE_MS).toISOString();
+  // A caller-scoped tick only takes that tenant's work; the unscoped form is for
+  // cron and unattended workers that own the whole queue.
+  const scope = tenant?.trim();
+  const tenantClause = scope ? " AND org = ?" : "";
+  const tenantArg = scope ? [scope] : [];
   db.prepare("UPDATE durable_runs SET status='running' WHERE status='running' AND lease_until < ?").run(now);
   const candidate = db
     .prepare(
-      "SELECT id, input, checkpoint, max_attempts, attempts FROM durable_runs WHERE status = 'pending' OR (status='running' AND (lease_until IS NULL OR lease_until < ?)) ORDER BY priority ASC, created_at ASC LIMIT 1",
+      `SELECT id, input, checkpoint, max_attempts, attempts FROM durable_runs WHERE (status = 'pending' OR (status='running' AND (lease_until IS NULL OR lease_until < ?)))${tenantClause} ORDER BY priority ASC, created_at ASC LIMIT 1`,
     )
-    .get(now) as Record<string, unknown> | undefined;
+    .get(now, ...tenantArg) as Record<string, unknown> | undefined;
   if (!candidate) return null;
   const claimed = db
     .prepare(
-      "UPDATE durable_runs SET status='running', worker_id=?, lease_until=?, attempts=attempts+1 WHERE id=? AND (status='pending' OR (status='running' AND (lease_until IS NULL OR lease_until < ?))) RETURNING attempts",
+      `UPDATE durable_runs SET status='running', worker_id=?, lease_until=?, attempts=attempts+1 WHERE id=? AND (status='pending' OR (status='running' AND (lease_until IS NULL OR lease_until < ?)))${tenantClause} RETURNING attempts`,
     )
-    .get(workerId, lease, String(candidate.id), now) as { attempts: number } | undefined;
+    .get(workerId, lease, String(candidate.id), now, ...tenantArg) as { attempts: number } | undefined;
   if (!claimed) return null;
   return {
     id: String(candidate.id),
@@ -148,8 +156,11 @@ class LeaseLostError extends Error {
 // Execute a claimed run: skip completed steps, run the rest, checkpointing
 // after each. On failure, retry (back to pending with delay via lease expiry)
 // until max_attempts, then dead-letter.
-export async function tick(workerId = `w-${process.pid}`, opts: { heartbeatMs?: number } = {}): Promise<string | null> {
-  const claimed = claimNext(workerId);
+export async function tick(
+  workerId = `w-${process.pid}`,
+  opts: { heartbeatMs?: number; tenant?: string | null } = {},
+): Promise<string | null> {
+  const claimed = claimNext(workerId, opts.tenant);
   if (!claimed) return null;
   const db = getDb();
   const { id } = claimed;

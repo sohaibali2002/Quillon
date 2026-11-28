@@ -7,6 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/lib/db";
 import { resolveModelAny } from "@/lib/models";
+import { tenantScope } from "@/lib/tenant-context";
 import { generateText } from "ai";
 
 export type Job = {
@@ -45,12 +46,18 @@ function rowToJob(r: Record<string, unknown>): Job {
   };
 }
 
-export function listJobs(): Job[] {
-  return (getDb().prepare("SELECT * FROM jobs ORDER BY created_at DESC").all() as Record<string, unknown>[]).map(rowToJob);
+export function listJobs(tenant?: string | null): Job[] {
+  return (
+    getDb()
+      .prepare("SELECT * FROM jobs WHERE tenant_id = ? ORDER BY created_at DESC")
+      .all(tenantScope(tenant)) as Record<string, unknown>[]
+  ).map(rowToJob);
 }
 
-export function getJob(id: string): Job | null {
-  const r = getDb().prepare("SELECT * FROM jobs WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+export function getJob(id: string, tenant?: string | null): Job | null {
+  const r = getDb()
+    .prepare("SELECT * FROM jobs WHERE id = ? AND tenant_id = ?")
+    .get(id, tenantScope(tenant)) as Record<string, unknown> | undefined;
   return r ? rowToJob(r) : null;
 }
 
@@ -67,32 +74,35 @@ export function createJob(input: {
   model?: string;
   schedule?: Job["schedule"];
   packageId?: string;
+  tenant?: string | null;
 }): Job {
   const id = randomUUID();
   const schedule = input.schedule ?? "manual";
+  const tenant = tenantScope(input.tenant);
   const next = INTERVAL_HOURS[schedule]
     ? new Date(Date.now() + INTERVAL_HOURS[schedule]! * 3600_000).toISOString()
     : null;
   getDb()
     .prepare(
-      "INSERT INTO jobs (id, name, prompt, model, schedule, package_id, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO jobs (id, tenant_id, name, prompt, model, schedule, package_id, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .run(id, input.name, input.prompt, input.model ?? null, schedule, input.packageId ?? null, next);
-  return getJob(id)!;
+    .run(id, tenant, input.name, input.prompt, input.model ?? null, schedule, input.packageId ?? null, next);
+  return getJob(id, tenant)!;
 }
 
 export function updateJob(
   id: string,
   patch: Partial<Pick<Job, "name" | "prompt" | "model" | "schedule" | "enabled">>,
+  tenant?: string | null,
 ): Job | null {
-  const job = getJob(id);
+  const job = getJob(id, tenant);
   if (!job) return null;
   const next = patch.schedule && INTERVAL_HOURS[patch.schedule]
     ? new Date(Date.now() + INTERVAL_HOURS[patch.schedule]! * 3600_000).toISOString()
     : job.nextRunAt;
   getDb()
     .prepare(
-      `UPDATE jobs SET name = ?, prompt = ?, model = ?, schedule = ?, enabled = ?, next_run_at = ? WHERE id = ?`,
+      `UPDATE jobs SET name = ?, prompt = ?, model = ?, schedule = ?, enabled = ?, next_run_at = ? WHERE id = ? AND tenant_id = ?`,
     )
     .run(
       patch.name ?? job.name,
@@ -102,12 +112,15 @@ export function updateJob(
       patch.enabled === undefined ? (job.enabled ? 1 : 0) : patch.enabled ? 1 : 0,
       next,
       id,
+      tenantScope(tenant),
     );
-  return getJob(id);
+  return getJob(id, tenant);
 }
 
-export function deleteJob(id: string): boolean {
-  return getDb().prepare("DELETE FROM jobs WHERE id = ?").run(id).changes > 0;
+export function deleteJob(id: string, tenant?: string | null): boolean {
+  return getDb()
+    .prepare("DELETE FROM jobs WHERE id = ? AND tenant_id = ?")
+    .run(id, tenantScope(tenant)).changes > 0;
 }
 
 export function listRuns(jobId: string, limit = 20): JobRun[] {

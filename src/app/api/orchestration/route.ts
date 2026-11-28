@@ -5,9 +5,13 @@
 //   POST { op: "resume", id }                    → re-register a persisted pipeline's steps, then tick the worker
 //   POST { op: "validate", plan }                → validate a client-supplied plan
 // GET ?id= lists recent runs (durable) for the Govern-style status views.
+//
+// Everything here is built from the caller's principal and role: the catalog the
+// planner sees, the tools a step may call and the tenant those tools act on all
+// come from scopedToolset, so orchestration is never wider than the caller.
 import { z } from "zod";
 import { guard, audit } from "@/lib/guard";
-import { principalForSession } from "@/lib/rbac";
+import { principalForSession, roleOf } from "@/lib/rbac";
 import { getRun, listRuns, tick } from "@/lib/durable";
 import {
   executePipeline,
@@ -15,8 +19,9 @@ import {
   pipelinePlanSchema,
   planPipeline,
   resumeOrchestrationRun,
+  validatePlan,
 } from "@/lib/orchestrator";
-import { unifiedToolset } from "@/lib/tool-registry";
+import { scopedToolset } from "@/lib/tool-registry";
 
 export const maxDuration = 60;
 
@@ -52,13 +57,15 @@ export async function POST(req: Request) {
     );
   }
   const body = parsed.data;
-  const tenant = principalForSession(gate).tenant;
+  const identity = principalForSession(gate);
+  const role = roleOf(gate);
 
   if (body.op === "validate") {
-    const unified = await unifiedToolset("orchestrator");
-    const { validatePlan } = await import("@/lib/orchestrator");
+    const unified = await scopedToolset("orchestrator", identity, role);
     return Response.json(validatePlan(body.plan, unified.catalog));
   }
+
+  const tenant = identity.tenant;
 
   if (body.op === "resume") {
     if (!getRun(body.id, tenant)) {
@@ -68,13 +75,13 @@ export async function POST(req: Request) {
     if (!ok) {
       return Response.json({ error: { message: "Not a resumable orchestration run." } }, { status: 404 });
     }
-    const ran = await tick();
+    const ran = await tick(undefined, { tenant });
     audit(req, gate, "orchestration.resume", body.id, { ran });
     return Response.json({ ok: true, ran });
   }
 
-  // plan / run / run-durable share the planning step.
-  const unified = await unifiedToolset("orchestrator");
+  // plan / run / run-durable share the planning step, over the caller's own tools.
+  const unified = await scopedToolset("orchestrator", identity, role);
   const { plan, validation, catalog } = await planPipeline(body.goal, body.model, unified);
   if (!validation.ok) {
     return Response.json(
@@ -93,7 +100,12 @@ export async function POST(req: Request) {
     return Response.json({ plan, validation, result });
   }
 
-  const { runId, kind } = await enqueueOrchestration(plan, unified.tools, { goal: body.goal, org: tenant });
+  const { runId, kind } = await enqueueOrchestration(plan, unified.tools, {
+    goal: body.goal,
+    org: tenant,
+    identity,
+    role,
+  });
   audit(req, gate, "orchestration.enqueue", runId, { kind, steps: plan.steps.length });
   return Response.json({ runId, kind, plan, validation });
 }

@@ -14,6 +14,9 @@ import { buildCostpointTools } from "@/lib/costpoint";
 import { buildOpenRouterTools } from "@/lib/openrouter";
 import { createMemoryTools, type MemoryIdentity } from "@/lib/memory";
 import { mcpToolset } from "@/lib/mcp";
+import { buildForensicsTools } from "@/lib/forensics/tools";
+import { enforceToolAuthority } from "@/lib/tool-authority";
+import type { Role } from "@/lib/rbac";
 
 export type ToolSource =
   | "builtin"
@@ -24,6 +27,7 @@ export type ToolSource =
   | "costpoint"
   | "openrouter"
   | "memory"
+  | "forensics"
   | "mcp";
 
 export interface ToolCatalogEntry {
@@ -87,6 +91,7 @@ export async function unifiedToolset(
     // OpenRouter registers only when OPENROUTER_API_KEY is set (36 or_* tools).
     ["openrouter", buildOpenRouterTools()],
     ["memory", createMemoryTools(identity, conversationId)],
+    ["forensics", buildForensicsTools(tenant, identity.owner ?? "system")],
     ["mcp", mcp.tools],
   ];
   const tools: ToolSet = {};
@@ -99,6 +104,25 @@ export async function unifiedToolset(
     }
   }
   return { tools, catalog, mcpErrors: mcp.errors };
+}
+
+// A toolset scoped to the caller: tenant-scoped integrations (unifiedToolset)
+// filtered by the caller's role (tool-authority). Every consumer that plans or
+// executes tools outside a normal chat turn must use this, so a pipeline can
+// neither see another tenant's integrations nor reach a tool the role may not
+// call directly.
+export async function scopedToolset(
+  conversationId: string,
+  identity: MemoryIdentity,
+  role: Role,
+): Promise<UnifiedToolset> {
+  const unified = await unifiedToolset(conversationId, identity);
+  const tools = enforceToolAuthority(unified.tools, role);
+  return {
+    tools,
+    catalog: unified.catalog.filter((c) => c.name in tools),
+    mcpErrors: unified.mcpErrors,
+  };
 }
 
 // Planner prompt form of the catalog: one line per tool.

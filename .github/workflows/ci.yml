@@ -41,4 +41,5 @@ jobs:
       - run: npm run check:costpoint
       - run: npm run check:openrouter
       - run: npm run check:orchestration
+      - run: npm run check:forensics
       - run: npm run check:security

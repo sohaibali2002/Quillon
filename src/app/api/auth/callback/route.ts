@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
   jar.delete(PKCE_COOKIE);
   if (!raw) return NextResponse.json({ error: "Sign-in attempt expired, try again" }, { status: 400 });
 
-  let saved: { verifier: string; state: string; redirectTo: string };
+  let saved: { verifier: string; state: string; nonce?: string; redirectTo: string };
   try {
     saved = JSON.parse(raw);
   } catch {
@@ -63,12 +63,24 @@ export async function GET(req: NextRequest) {
   if (!tokenRes.ok) {
     return NextResponse.json({ error: "Token exchange failed" }, { status: 401 });
   }
-  const tokens = (await tokenRes.json()) as { access_token: string; expires_in?: number };
+  const tokens = (await tokenRes.json()) as { access_token: string; id_token?: string; expires_in?: number };
+
+  // The ID token must belong to this sign-in attempt. A provider that returns a
+  // token for another user/session (replay, mix-up) fails here.
+  if (!nonceMatches(tokens.id_token, saved.nonce, config.clientId, config.issuer)) {
+    return NextResponse.json({ error: "Identity token did not match this sign-in attempt" }, { status: 401 });
+  }
 
   const claims = await decodeIdClaims(endpoints.userinfo_endpoint, tokens.access_token);
+  const sub = String(claims.sub ?? "").trim();
+  if (!sub) {
+    // A session with no subject is not an identity: fail closed rather than
+    // issue a cookie that lands every caller in the default tenant.
+    return NextResponse.json({ error: "Identity provider returned no subject" }, { status: 401 });
+  }
   const now = Math.floor(Date.now() / 1000);
   const session: Session = {
-    sub: String(claims.sub ?? ""),
+    sub,
     name: String(claims.name ?? claims.preferred_username ?? "Signed-in user"),
     email: String(claims.email ?? claims.preferred_username ?? ""),
     roles: Array.isArray(claims.roles) ? claims.roles.map(String) : [],
@@ -88,6 +100,33 @@ async function decodeIdClaims(userinfoEndpoint: string, accessToken: string) {
   });
   if (!res.ok) return { sub: "" };
   return (await res.json()) as Record<string, unknown>;
+}
+
+// Verifies that the ID token belongs to this sign-in attempt: nonce match,
+// audience, issuer and expiry. A missing token is a failure, because without
+// one the nonce cannot be checked (the default scope set includes `openid`).
+function nonceMatches(
+  idToken: string | undefined,
+  nonce: string | undefined,
+  clientId: string,
+  issuer: string,
+): boolean {
+  if (!idToken || !nonce) return false;
+  const part = idToken.split(".")[1];
+  if (!part) return false;
+  let claims: Record<string, unknown>;
+  try {
+    claims = JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  if (typeof claims.nonce !== "string" || claims.nonce !== nonce) return false;
+  const aud = Array.isArray(claims.aud) ? claims.aud.map(String) : [String(claims.aud ?? "")];
+  if (!aud.includes(clientId)) return false;
+  if (typeof claims.iss === "string" && claims.iss.replace(/\/+$/, "") !== issuer.replace(/\/+$/, "")) return false;
+  const exp = Number(claims.exp ?? 0);
+  if (exp > 0 && exp * 1000 < Date.now() - 60_000) return false;
+  return true;
 }
 
 function safeReturn(target: string): string {
